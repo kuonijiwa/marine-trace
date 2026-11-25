@@ -51,11 +51,16 @@ earthengine authenticate          # 第一次需要登录 Google 账号
 
 ### 1. 参考边界
 
+分两个阶段（一次算完会超出 GEE 的单任务时限）：
+
 ```bash
-python -m rs_verify.gee_step1_reference --area ailun --project <PROJECT>
+# 阶段 A：持续度图（存到 GEE 资产 + Drive）和真彩色图
+python -m rs_verify.gee_step1_reference --area ailun --project <PROJECT> --stage persistence
+# 等任务页面里 ailun_persistence_asset 完成后，阶段 B：勾边界
+python -m rs_verify.gee_step1_reference --area ailun --project <PROJECT> --stage vectors
 ```
 
-GEE 会往 Drive 的 `marine_trace/` 文件夹导出三个文件。在 QGIS 里叠加
+Drive 的 `marine_trace/` 文件夹里会出现三个文件。在 QGIS 里叠加
 `ailun_reference_draft.geojson` 和 `ailun_s2_truecolor.tif`，删掉不是养殖设施的多边形，
 保存为 `data/reference/ailun_reference.geojson`。
 同时检查 `config.py` 里研究区范围框是否合适，必要时收紧并把 `verified` 改成 True。
