@@ -20,6 +20,19 @@ from . import config as C
 PIXEL_AREA_M2 = 100.0  # 10 m × 10 m
 
 
+def activity_metric(act: pd.DataFrame, metric: str = C.ACTIVITY_METRIC) -> pd.Series:
+    """每景每个多边形的"活动指标"。
+
+    excess      = lin_ratio − 1：多边形平均雷达亮度比海面高出多少（线性）。空海面≈0；
+                  按混合模型，它与多边形里被浮筏覆盖的比例成正比。（默认，适合海带浮筏）
+    bright_frac = 多边形里"比背景亮 6 dB"的像元占比。（适合网箱等强回波结构）
+    数据里没有 lin_ratio 列时（旧版导出），自动退回 bright_frac。
+    """
+    if metric == "excess" and "lin_ratio" in act.columns:
+        return pd.to_numeric(act["lin_ratio"], errors="coerce") - 1.0
+    return pd.to_numeric(act["bright_frac"], errors="coerce")
+
+
 def prepare_activity(
     act: pd.DataFrame,
     active_threshold: float = C.ACTIVE_FRAC_THRESHOLD,
@@ -29,11 +42,11 @@ def prepare_activity(
     a = act.copy()
     a["pid"] = a["pid"].astype(str)
     a["date"] = pd.to_datetime(a["date"])
-    a["bright_frac"] = pd.to_numeric(a["bright_frac"], errors="coerce")
-    a = a.dropna(subset=["bright_frac"])
+    a["metric"] = activity_metric(a)
+    a = a.dropna(subset=["metric"])
     a["coverage"] = a["n_pix"] * PIXEL_AREA_M2 / a["area_m2"]
     a = a[a["coverage"] >= min_coverage]
-    a["active"] = a["bright_frac"] >= active_threshold
+    a["active"] = a["metric"] >= active_threshold
     a["month"] = a["date"].dt.month
     return a
 
@@ -53,7 +66,7 @@ def full_stock_fraction(act: pd.DataFrame, claims: pd.DataFrame, q: float = 0.9)
             continue
         w = a[(a["date"] >= c.start) & (a["date"] <= c.end)]
         if len(w):
-            vals.append(w["bright_frac"].median())
+            vals.append(w["metric"].median())
     return float(np.quantile(vals, q)) if vals else float("nan")
 
 
@@ -97,7 +110,7 @@ def verify_claims(
         pmax = prof_max.get(c.pid, np.nan)
         T = float(pm.mean() / pmax) if (pmax and pmax > 0 and pm.notna().any()) else 0.0
         conf = spatial_weight * S + (1 - spatial_weight) * T
-        eff = float(np.clip(w["bright_frac"].median() / f_full, 0, 1)) if f_full and f_full > 0 else np.nan
+        eff = float(np.clip(w["metric"].median() / f_full, 0, 1)) if f_full and f_full > 0 else np.nan
         qr = float(c.quantity_rel / eff) if eff and eff > 0 else np.inf
         rec.update(spatial=S, temporal=T, confidence=conf, eff_frac=eff, qty_ratio=qr, status="ok")
         out.append(rec)
@@ -121,13 +134,14 @@ def calibrate_active_threshold(act_raw: pd.DataFrame, claims: pd.DataFrame) -> f
         for c in rows.itertuples():
             x = a_by.get(str(c.pid))
             if x is not None:
-                vals.append(x[(x["date"] >= c.start) & (x["date"] <= c.end)]["bright_frac"].to_numpy())
+                vals.append(x[(x["date"] >= c.start) & (x["date"] <= c.end)]["metric"].to_numpy())
         return np.concatenate(vals) if vals else np.array([])
 
     pos = collect(cl[cl["label"] == "true"])
     neg = collect(cl[(cl["label"] == "fake_location") & (cl["shift_m"] >= 2000) & (cl["overlap_ref"] < 0.05)])
     if len(pos) == 0 or len(neg) == 0:
         return C.ACTIVE_FRAC_THRESHOLD
-    grid = np.linspace(0.01, 0.8, 80)
+    # 候选阈值取正负样本合并后的分位点（指标量纲不同，固定网格不通用）
+    grid = np.unique(np.quantile(np.r_[pos, neg], np.linspace(0.01, 0.99, 197)))
     j = [(pos >= t).mean() - (neg >= t).mean() for t in grid]
     return float(grid[int(np.argmax(j))])

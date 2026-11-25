@@ -4,8 +4,11 @@
       通常是 claims.py 生成的 data/claims/<area>_claim_geoms.geojson
       （里面同时包含真实参考边界和平移后的假边界）。
 输出：一张 CSV（导出到 Google Drive），每行 = 一个多边形 × 一景影像：
-      pid, date, bright_frac（多边形内设施像元占比）, n_pix（有效像元数）,
-      orbit_pass, rel_orbit, platform, water_frac
+      pid, date,
+      lin_ratio（多边形平均雷达亮度 / 这一景海面背景，线性功率；空海面≈1，主指标）,
+      bright_frac（多边形内"比背景亮 6 dB"像元占比；适合网箱）, bg_db（背景, dB）,
+      n_pix（有效像元数）, orbit_pass, rel_orbit, platform, water_frac, area_m2
+  水体掩膜已向海收缩 100 m（离岸太近的像元不计）。
 
 用法：
   python -m rs_verify.gee_step2_activity --area ailun \
@@ -21,7 +24,8 @@ from . import config as C
 from . import gee_common as G
 from .geo import load_geojson
 
-SELECTORS = ["pid", "date", "bright_frac", "n_pix", "orbit_pass", "rel_orbit", "platform", "water_frac", "area_m2"]
+SELECTORS = ["pid", "date", "lin_ratio", "bright_frac", "bg_db", "n_pix", "orbit_pass", "rel_orbit", "platform",
+             "water_frac", "area_m2"]
 
 
 def to_ee_fc(fc: dict) -> ee.FeatureCollection:
@@ -47,13 +51,20 @@ def activity_table(fc: ee.FeatureCollection, start: str, end: str) -> ee.Feature
     def per_image(img):
         img = ee.Image(img)
         date = ee.Date(img.get("system:time_start")).format("YYYY-MM-dd")
-        stats = img.select("bright").reduceRegions(collection=fc, reducer=reducer, scale=10)
+        bg_lin = ee.Number(img.get("bg_lin"))
+        # 两个波段 × (mean, count) → 属性名 bright_mean / bright_count / vv_lin_mean / vv_lin_count
+        stats = img.select(["bright", "vv_lin"]).reduceRegions(collection=fc, reducer=reducer, scale=10)
+        # 影像没覆盖到的多边形 count=0、mean=null，先去掉再做除法
+        stats = stats.filter(ee.Filter.gt("vv_lin_count", 0))
         return stats.map(
             lambda f: f.set(
                 {
                     "date": date,
-                    "bright_frac": f.get("mean"),
-                    "n_pix": f.get("count"),
+                    "bright_frac": f.get("bright_mean"),
+                    # 亮度比 = 多边形平均线性功率 / 这一景海面背景；空海面 ≈ 1
+                    "lin_ratio": ee.Number(f.get("vv_lin_mean")).divide(bg_lin),
+                    "bg_db": img.get("bg_db"),
+                    "n_pix": f.get("vv_lin_count"),
                     "orbit_pass": img.get("orbitProperties_pass"),
                     "rel_orbit": img.get("relativeOrbitNumber_start"),
                     "platform": img.get("platform_number"),
@@ -61,9 +72,7 @@ def activity_table(fc: ee.FeatureCollection, start: str, end: str) -> ee.Feature
             )
         )
 
-    table = col.map(per_image).flatten()
-    # 影像没覆盖到的多边形 count=0、mean=null，去掉
-    return table.filter(ee.Filter.gt("n_pix", 0))
+    return col.map(per_image).flatten()
 
 
 def main() -> None:
