@@ -51,19 +51,26 @@ earthengine authenticate          # 第一次需要登录 Google 账号
 
 ### 1. 参考边界
 
-分两个阶段（一次算完会超出 GEE 的单任务时限）：
+参考边界用 **Sentinel-2 光学**提取（海带浮筏在光学图上清晰可见；参考来自光学、核验用雷达，两个独立传感器）。
+分两个阶段（重计算先存成 GEE 资产，避免超时）：
 
 ```bash
-# 阶段 A：持续度图（存到 GEE 资产 + Drive）和真彩色图
-python -m rs_verify.gee_step1_reference --area ailun --project <PROJECT> --stage persistence
-# 等任务页面里 ailun_persistence_asset 完成后，阶段 B：勾边界
-python -m rs_verify.gee_step1_reference --area ailun --project <PROJECT> --stage vectors
+# 阶段 A：旺季去云合成 → 浮筏纹理图（存到 GEE 资产），并导出真彩色图 ailun_s2_truecolor_v2.tif 到 Drive
+python -m rs_verify.gee_step1_reference --area ailun --project <PROJECT> --stage s2mask
+# 等任务页面里 ailun_s2_texture_asset 完成后，阶段 B：按阈值勾边界（可多试几个阈值，不用重算纹理）
+python -m rs_verify.gee_step1_reference --area ailun --project <PROJECT> --stage s2vectors --threshold 0.05
 ```
 
-Drive 的 `marine_trace/` 文件夹里会出现三个文件。在 QGIS 里叠加
-`ailun_reference_draft.geojson` 和 `ailun_s2_truecolor.tif`，删掉不是养殖设施的多边形，
-保存为 `data/reference/ailun_reference.geojson`。
-同时检查 `config.py` 里研究区范围框是否合适，必要时收紧并把 `verified` 改成 True。
+Drive 的 `marine_trace/` 里会出现 `ailun_s2_reference_draft_t050.geojson`。下载后运行检查脚本：
+
+```bash
+python -m rs_verify.inspect_step1 --area ailun --source s2 --geojson <GeoJSON路径> --project <PROJECT> --threshold 0.05
+```
+
+它会打印统计和"海面纹理分位数"（帮助选阈值），并生成分布图和卫星叠加图。
+确认后在 QGIS 里删掉港口等误检，保存为 `data/reference/ailun_reference.geojson`。
+
+（雷达 S1 的 `--stage persistence / vectors` 仍保留，适合网箱等强回波结构。）
 
 ### 2. 生成声明 + 活动曲线
 
@@ -96,7 +103,9 @@ python -m pytest -q tests
 
 ## 已知待定事项
 
-- 研究区范围框是估计值，第 1 步要人工核对。
+- 研究区范围框已按第一次结果放大（2026-11-25），仍需核对。
+- 第 2 步的主指标是"多边形平均雷达亮度 / 海面背景"（lin_ratio）：海带浮筏回波只比海面略亮，
+  单像元"亮 6 dB"的规则会漏掉大部分浮筏（第一次试跑已证实）。
 - 爱伦湾的浮筏可能全年在海上（海带 11→5 月，龙须菜 7→10 月），时间核验能否成立要看第 2 步的活动曲线。
 - 产量检查需要单位面积产量（统计年鉴/文献），目前是占位，实验设计也待定。
 - 人工鱼礁在水下，卫星看不到；本方法只适用于有水面设施（筏架、网箱）的牧场。

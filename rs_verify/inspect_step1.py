@@ -1,17 +1,19 @@
 """检查第 1 步结果：参考边界初稿的统计 + 两张快速预览图。
 
-输入：从 Drive 下载的 <area>_reference_draft.geojson（放到 data/reference/ 下）。
+输入：从 Drive 下载的参考边界 GeoJSON（--geojson 指定路径）。
 输出（outputs/<area>/）：
-  step1_summary.txt   统计结果（同时打印在终端）
-  step1_polygons.png  多边形分布图（按持续度着色，红框 = 研究区范围）
-  step1_overlay.png   卫星真彩色图 + 检测到的设施（红色），需要 GEE；加 --no-gee 跳过
+  step1_<source>_summary.txt   统计结果（同时打印在终端）
+  step1_<source>_polygons.png  多边形分布图（按纹理/持续度着色，红框 = 研究区范围）
+  step1_<source>_overlay.png   卫星真彩色图 + 检测到的养殖区（红色），需要 GEE；加 --no-gee 跳过
+加 --copy-to <文件夹> 可把这三个文件再复制一份过去（例如 Google Drive 电脑版的同步文件夹）。
 
-用法：
-  python -m rs_verify.inspect_step1 --area ailun --project <项目ID>
+用法（光学参考边界）：
+  python -m rs_verify.inspect_step1 --area ailun --source s2 --geojson <GeoJSON路径> --project <项目ID>
 """
 from __future__ import annotations
 
 import argparse
+import shutil
 import urllib.request
 from pathlib import Path
 
@@ -26,6 +28,7 @@ from . import config as C  # noqa: E402
 from . import geo  # noqa: E402
 
 EDGE_TOL_DEG = 0.002  # 约 200 m：多边形离研究区框边缘这么近，就算"碰边"
+VALUE_KEYS = ("mean_texture", "mean_persistence")
 
 
 def polygons_of(geom: dict) -> list[list[list[float]]]:
@@ -45,17 +48,17 @@ def summarize(fc: dict, bbox: list[float]) -> tuple[str, list[dict]]:
         if g is None or g["type"] not in ("Polygon", "MultiPolygon"):
             continue
         p = f.get("properties", {}) or {}
+        val = next((p[k] for k in VALUE_KEYS if p.get(k) is not None), None)
         area = geo.geometry_area_m2(g)
         bw, bs, be, bn = geo.geometry_bounds(g)
         touch = bw - w < EDGE_TOL_DEG or e - be < EDGE_TOL_DEG or bs - s < EDGE_TOL_DEG or n - bn < EDGE_TOL_DEG
         cx, cy = (bw + be) / 2, (bs + bn) / 2
-        rows.append({"area_m2": area, "pers": p.get("mean_persistence"), "touch": touch,
-                     "cx": cx, "cy": cy, "geom": g})
+        rows.append({"area_m2": area, "val": val, "touch": touch, "cx": cx, "cy": cy, "geom": g})
     if not rows:
         return "没有找到任何多边形（可能阈值太高，或研究区框不在养殖区上）。", rows
 
     areas = np.array([r["area_m2"] for r in rows])
-    pers = np.array([r["pers"] for r in rows if r["pers"] is not None], dtype=float)
+    vals = np.array([r["val"] for r in rows if r["val"] is not None], dtype=float)
     touch = [r for r in rows if r["touch"]]
     big = sorted(rows, key=lambda r: -r["area_m2"])[:10]
     lines = [
@@ -67,13 +70,14 @@ def summarize(fc: dict, bbox: list[float]) -> tuple[str, list[dict]]:
             int((areas < 1e4).sum()), int(((areas >= 1e4) & (areas < 1e5)).sum()),
             int(((areas >= 1e5) & (areas < 1e6)).sum()), int((areas >= 1e6).sum())),
     ]
-    if len(pers):
-        lines.append("平均持续度：最小 {:.2f} / 中位 {:.2f} / 最大 {:.2f}".format(*np.percentile(pers, [0, 50, 100])))
+    if len(vals):
+        lines.append("多边形平均值（纹理或持续度）：最小 {:.3f} / 中位 {:.3f} / 最大 {:.3f}".format(
+            *np.percentile(vals, [0, 50, 100])))
     lines.append(f"碰到研究区框边缘的多边形：{len(touch)} 块，合计 {sum(r['area_m2'] for r in touch) / 1e4:.0f} 公顷"
                  "（多的话说明养殖区延伸到框外，框可能需要放大）")
-    lines.append("最大的 10 块（面积 ha，中心经度，中心纬度，平均持续度）：")
+    lines.append("最大的 10 块（面积 ha，中心经度，中心纬度，平均值）：")
     for r in big:
-        pv = f"{r['pers']:.2f}" if r["pers"] is not None else "NA"
+        pv = f"{r['val']:.3f}" if r["val"] is not None else "NA"
         lines.append(f"  {r['area_m2'] / 1e4:8.1f}  {r['cx']:.4f}  {r['cy']:.4f}  {pv}")
     return "\n".join(lines), rows
 
@@ -84,13 +88,15 @@ def plot_polygons(rows: list[dict], bbox: list[float], out: Path, title: str) ->
     for r in rows:
         for ring in polygons_of(r["geom"]):
             verts.append(np.array(ring)[:, :2])
-            vals.append(r["pers"] if r["pers"] is not None else 0.0)
+            vals.append(r["val"] if r["val"] is not None else np.nan)
     fig, ax = plt.subplots(figsize=(7, 7))
     if verts:
-        pc = PolyCollection(verts, array=np.array(vals), cmap="viridis", edgecolor="none")
-        pc.set_clim(C.PERSISTENCE_THRESHOLD, 1.0)
+        v = np.array(vals, dtype=float)
+        pc = PolyCollection(verts, array=v, cmap="viridis", edgecolor="none")
+        if np.isfinite(v).any():
+            pc.set_clim(*np.nanpercentile(v, [5, 95]))
         ax.add_collection(pc)
-        fig.colorbar(pc, ax=ax, shrink=0.7, label="mean persistence")
+        fig.colorbar(pc, ax=ax, shrink=0.7, label="mean texture / persistence")
     ax.plot([w, e, e, w, w], [s, s, n, n, s], "r-", lw=1)
     pad = 0.01
     ax.set_xlim(w - pad, e + pad)
@@ -104,50 +110,82 @@ def plot_polygons(rows: list[dict], bbox: list[float], out: Path, title: str) ->
     plt.close(fig)
 
 
-def gee_overlay(area: str, project: str, out: Path) -> None:
+def gee_overlay(area: str, project: str, source: str, threshold: float, out: Path) -> str:
+    """真彩色 + 检测结果（红色）的预览图；S2 时顺便返回海面纹理分位数，帮助选阈值。"""
     import ee
 
     from . import gee_common as G
-    from .gee_step1_reference import asset_id, s2_truecolor
+    from .gee_step1_reference import asset_id, s2_asset_id
 
     G.init(project)
-    bbox = C.STUDY_AREAS[area]["bbox"]
-    region = G.region_from_bbox(bbox)
-    rgb = s2_truecolor(region, "2025-02-01", "2025-04-30").visualize(min=0, max=255)
-    pers = ee.Image(asset_id(project, area))
-    det = pers.gte(C.PERSISTENCE_THRESHOLD).selfMask().visualize(palette=["ff0000"], opacity=0.6)
+    region = G.region_from_bbox(C.STUDY_AREAS[area]["bbox"])
+    comp = G.s2_composite(region, C.S2_REF_START, C.S2_REF_END)
+    rgb = comp.select(["B4", "B3", "B2"]).visualize(min=0, max=3000)
+    note = ""
+    if source == "s2":
+        tex = ee.Image(s2_asset_id(project, area))
+        det = G.raft_mask_from_texture(tex, threshold)
+        pct = tex.reduceRegion(ee.Reducer.percentile([10, 25, 50, 75, 90, 95, 99]), region, 60,
+                               bestEffort=True, maxPixels=1e9).getInfo()
+        keys = sorted(pct, key=lambda k: int(k.split("_p")[-1]))
+        note = "海面纹理分位数（选阈值参考）：" + "，".join(f"p{k.split('_p')[-1]}={pct[k]:.3f}" for k in keys
+                                                       if pct[k] is not None)
+    else:
+        det = ee.Image(asset_id(project, area)).gte(C.PERSISTENCE_THRESHOLD).selfMask()
+    det_vis = det.visualize(palette=["ff0000"], opacity=0.55)
     frame = ee.Image().byte().paint(ee.FeatureCollection([ee.Feature(region)]), 1, 2).visualize(palette=["ffff00"])
-    img = ee.ImageCollection([rgb, det, frame]).mosaic()
+    img = ee.ImageCollection([rgb, det_vis, frame]).mosaic()
     url = img.getThumbURL({"region": region, "dimensions": 1600, "format": "png"})
     urllib.request.urlretrieve(url, out)
+    return note
 
 
 def main() -> None:
     ap = argparse.ArgumentParser(description="检查第1步结果")
     ap.add_argument("--area", required=True, choices=list(C.STUDY_AREAS))
-    ap.add_argument("--geojson", default=None, help="默认 data/reference/<area>_reference_draft.geojson")
+    ap.add_argument("--source", choices=["s2", "s1"], default="s2", help="参考边界来源")
+    ap.add_argument("--geojson", required=True, help="参考边界 GeoJSON 的路径")
+    ap.add_argument("--threshold", type=float, default=C.S2_TEXTURE_THRESHOLD, help="S2 纹理阈值（和 s2vectors 用的一致）")
     ap.add_argument("--project", default=None, help="GEE 项目 ID（画叠加图用）")
     ap.add_argument("--no-gee", action="store_true", help="不画卫星叠加图")
+    ap.add_argument("--copy-to", default=None, help="把输出再复制到这个文件夹（如 Google Drive 同步文件夹）")
     args = ap.parse_args()
 
-    gj = Path(args.geojson or Path(C.DATA_DIR) / "reference" / f"{args.area}_reference_draft.geojson")
+    gj = Path(args.geojson)
     if not gj.exists():
-        raise SystemExit(f"找不到 {gj}：请先从 Drive 的 marine_trace 文件夹下载 {gj.name} 放到 {gj.parent}/")
+        raise SystemExit(f"找不到 {gj}")
     od = Path(C.OUTPUT_DIR) / args.area
     od.mkdir(parents=True, exist_ok=True)
+    prefix = f"step1_{args.source}"
 
     bbox = C.STUDY_AREAS[args.area]["bbox"]
     text, rows = summarize(geo.load_geojson(gj), bbox)
-    print(text)
-    (od / "step1_summary.txt").write_text(text, encoding="utf-8")
-    plot_polygons(rows, bbox, od / "step1_polygons.png", f"{args.area}: detected structures")
-    print("已保存：", od / "step1_polygons.png")
+    outs = [od / f"{prefix}_polygons.png"]
+    plot_polygons(rows, bbox, outs[0], f"{args.area} ({args.source}): detected structures")
 
     if not args.no_gee:
         if not args.project:
             raise SystemExit("画卫星叠加图需要 --project <项目ID>（或加 --no-gee 跳过）")
-        gee_overlay(args.area, args.project, od / "step1_overlay.png")
-        print("已保存：", od / "step1_overlay.png")
+        outs.append(od / f"{prefix}_overlay.png")
+        note = gee_overlay(args.area, args.project, args.source, args.threshold, outs[-1])
+        if note:
+            text += "\n" + note
+    if args.source == "s2":
+        text += f"\n本次叠加图使用的纹理阈值：{args.threshold}"
+
+    print(text)
+    summary = od / f"{prefix}_summary.txt"
+    summary.write_text(text, encoding="utf-8")
+    outs.append(summary)
+    for p in outs:
+        print("已保存：", p)
+
+    if args.copy_to:
+        dst = Path(args.copy_to)
+        dst.mkdir(parents=True, exist_ok=True)
+        for p in outs:
+            shutil.copy2(p, dst / p.name)
+        print("已复制到：", dst)
 
 
 if __name__ == "__main__":

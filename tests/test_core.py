@@ -76,3 +76,32 @@ def test_verify_separates_true_and_fake():
     assert r.loc["t", "qty_ratio"] <= 1.0 < r.loc["qty", "qty_ratio"]
     assert r.loc["short", "status"] == "insufficient"
     assert np.isnan(r.loc["short", "confidence"])
+
+
+def test_excess_metric_and_fallback():
+    from rs_verify.verify import activity_metric
+
+    df = pd.DataFrame({"lin_ratio": [1.0, 2.0], "bright_frac": [0.1, 0.9]})
+    assert list(activity_metric(df, "excess")) == [0.0, 1.0]
+    assert list(activity_metric(df, "bright_frac")) == [0.1, 0.9]
+    # 旧版导出没有 lin_ratio 列时退回 bright_frac
+    assert list(activity_metric(df.drop(columns="lin_ratio"), "excess")) == [0.1, 0.9]
+
+
+def test_verify_with_excess_metric():
+    dates = pd.date_range("2019-01-01", "2021-12-31", freq="12D")
+    season = (dates.month >= 11) | (dates.month <= 5)
+    rows = []
+    for d, s in zip(dates, season):
+        rows.append({"pid": "R", "date": d, "lin_ratio": 2.0 if s else 1.05, "n_pix": 100, "area_m2": 10000})
+        rows.append({"pid": "SEA", "date": d, "lin_ratio": 1.0, "n_pix": 100, "area_m2": 10000})
+    act = prepare_activity(pd.DataFrame(rows), active_threshold=0.3)
+    claims = pd.DataFrame([
+        _claim("t", "R", "2019-11-01", "2020-05-31", "true"),
+        _claim("loc", "SEA", "2019-11-01", "2020-05-31", "fake_location"),
+        _claim("time", "R", "2020-06-01", "2020-10-31", "fake_time"),
+    ])
+    r = verify_claims(act, claims).set_index("claim_id")
+    assert r.loc["t", "confidence"] > 0.9
+    assert r.loc["loc", "confidence"] < 0.1
+    assert r.loc["time", "confidence"] < 0.1

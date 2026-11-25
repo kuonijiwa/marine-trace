@@ -57,31 +57,39 @@ def synthetic_activity(geoms: dict, seed: int = C.RANDOM_SEED, revisit_days: int
     ref_ids = [f["properties"]["pid"] for f in geoms["features"] if f["properties"]["kind"] == "reference"]
     stocking = {pid: rng.uniform(0.85, 1.0) for pid in ref_ids}
 
+    n = len(dates)
+
+    # 两个指标都模拟：bright_frac（亮像元占比）和 excess = lin_ratio − 1（平均亮度超出海面的比例）
+    # 海带季 excess ≈ 1.0（约 +3 dB），淡季 ≈ 0.1；空海面 ≈ 0，偶有船只
     def raft_series(pid):
-        base = np.where(season, 0.45 * stocking[pid], 0.05)
-        return np.clip(base + rng.normal(0, 0.06, len(dates)), 0, 1)
+        frac = np.clip(np.where(season, 0.45 * stocking[pid], 0.05) + rng.normal(0, 0.06, n), 0, 1)
+        exc = np.where(season, 1.0 * stocking[pid], 0.1) + rng.normal(0, 0.15, n)
+        return frac, exc
 
     def sea_series():
-        s = rng.beta(1, 40, len(dates))
-        ships = rng.random(len(dates)) < 0.03
-        return np.clip(s + ships * rng.uniform(0.1, 0.3, len(dates)), 0, 1)
+        ships = rng.random(n) < 0.03
+        frac = np.clip(rng.beta(1, 40, n) + ships * rng.uniform(0.1, 0.3, n), 0, 1)
+        exc = rng.normal(0, 0.08, n) + ships * rng.uniform(0.3, 0.8, n)
+        return frac, exc
 
     rows = []
     for f in geoms["features"]:
         p = f["properties"]
         pid, area = p["pid"], p["area_m2"]
         if p["kind"] == "reference":
-            frac = raft_series(pid)
+            frac, exc = raft_series(pid)
         else:
             ov = p.get("overlap_ref", 0.0)
-            # 落在"某个"参考筏区上：借用其所属参考筏区的季节曲线近似
-            frac = ov * raft_series(p["ref_pid"]) + (1 - ov) * sea_series()
+            # 落在"某个"参考筏区上：借用其所属参考筏区的季节曲线近似（线性混合）
+            (rf, re_), (sf, se) = raft_series(p["ref_pid"]), sea_series()
+            frac, exc = ov * rf + (1 - ov) * sf, ov * re_ + (1 - ov) * se
         full_pix = area / 100.0
-        cover = np.where(rng.random(len(dates)) < 0.05, rng.uniform(0.3, 0.7, len(dates)), 1.0)
-        keep = rng.random(len(dates)) > 0.03  # 少量缺景
-        for d, fr, cv, k in zip(dates, frac, cover, keep):
+        cover = np.where(rng.random(n) < 0.05, rng.uniform(0.3, 0.7, n), 1.0)
+        keep = rng.random(n) > 0.03  # 少量缺景
+        for d, fr, ex, cv, k in zip(dates, frac, exc, cover, keep):
             if k:
-                rows.append({"pid": pid, "date": d.strftime("%Y-%m-%d"), "bright_frac": round(float(fr), 4),
+                rows.append({"pid": pid, "date": d.strftime("%Y-%m-%d"), "lin_ratio": round(float(1 + ex), 4),
+                             "bright_frac": round(float(fr), 4), "bg_db": -22.0,
                              "n_pix": int(full_pix * cv), "orbit_pass": "ASCENDING", "rel_orbit": 0,
                              "platform": "A", "water_frac": 1.0, "area_m2": area})
     return pd.DataFrame(rows)
