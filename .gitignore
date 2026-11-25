@@ -1,0 +1,15 @@
+__pycache__/
+*.pyc
+.pytest_cache/
+.venv/
+.env
+
+# 数据和结果不进 git（体积大、可重新生成）
+data/sim/
+data/activity/*.csv
+data/claims/*
+outputs/
+*.tif
+
+# 保留空目录
+!data/**/.gitkeep
