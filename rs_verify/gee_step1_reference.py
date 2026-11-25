@@ -1,13 +1,15 @@
-"""第 1 步：建参考边界（"真实答案"）。分两个阶段运行，避免云端超时。
+"""第 1 步：建参考边界（"真实答案"）。分两个阶段运行。
 
 阶段 A（--stage persistence）：
-  把近两年的 S1 影像叠加成"设施持续度"图（每个像元被判为"亮"的比例，0~1）：
+  把 2025 年的 S1 影像叠加成"设施持续度"图（每个像元被判为"亮"的比例，0~1）：
   浮筏/网箱长期在海上 → 持续度高；船只偶尔经过 → 持续度低。
-  结果存两份：GEE 云端资产（给阶段 B 用）+ Drive 上的 GeoTIFF（给你看）。
+  只存到 GEE 云端资产（只算一次）。
   同时导出一张 Sentinel-2 真彩色图，供人工核对（已导出过可加 --no-s2 跳过）。
 
-阶段 B（--stage vectors，等阶段 A 的资产导出完成后再运行）：
-  直接读取存好的持续度图，把持续度 ≥ 阈值的区域勾成多边形（GeoJSON，导出到 Drive）。
+阶段 B（--stage vectors，等阶段 A 的资产任务完成后再运行）：
+  读取存好的持续度图：
+    - 导出一份 GeoTIFF 到 Drive（给你看）；
+    - 把持续度 ≥ 阈值的区域勾成多边形（GeoJSON，导出到 Drive）。
   这一步只是"在现成的图上画线"，很快。
 
 人工核对（在 QGIS 里打开 GeoJSON + 真彩色图）：
@@ -15,8 +17,8 @@
   - 核对后把文件放到 data/reference/<area>_reference.geojson。
 
 用法：
-  python -m rs_verify.gee_step1_reference --area ailun --project <项目ID> --stage persistence
-  （到 GEE 任务页面等 *_persistence_asset 完成）
+  python -m rs_verify.gee_step1_reference --area ailun --project <项目ID> --stage persistence --no-s2
+  （到 GEE 任务页面等 <area>_persistence_asset 完成）
   python -m rs_verify.gee_step1_reference --area ailun --project <项目ID> --stage vectors
 """
 from __future__ import annotations
@@ -28,8 +30,8 @@ import ee
 from . import config as C
 from . import gee_common as G
 
-# 参考边界只需要近两年的数据；全时段（2019-2025）留给第 2 步的活动曲线
-REF_START = "2024-01-01"
+# 参考边界只需要一年的数据；全时段（2019-2025）留给第 2 步的活动曲线
+REF_START = "2025-01-01"
 REF_END = "2025-12-31"
 
 
@@ -38,7 +40,7 @@ def asset_id(project: str, area: str) -> str:
 
 
 def persistence_image(region: ee.Geometry, start: str, end: str) -> ee.Image:
-    col = G.s1_collection(region, start, end).map(G.add_bright_band)
+    col = G.s1_collection(region, start, end).map(G.make_bright_fn(region))
     return col.select("bright").mean().rename("persistence").toFloat()
 
 
@@ -92,13 +94,9 @@ def main() -> None:
     if args.stage == "persistence":
         n = G.s1_collection(region, args.start, args.end).size().getInfo()
         print(f"[{info['name']}] {args.start} ~ {args.end} S1 影像数：{n}")
-        pers = persistence_image(region, args.start, args.end)
         tasks.append(ee.batch.Export.image.toAsset(
-            image=pers, description=f"{args.area}_persistence_asset", assetId=aid,
-            region=region, scale=10, maxPixels=1e10,
-        ))
-        tasks.append(ee.batch.Export.image.toDrive(
-            image=pers, description=f"{args.area}_s1_persistence", folder=args.drive_folder,
+            image=persistence_image(region, args.start, args.end),
+            description=f"{args.area}_persistence_asset", assetId=aid,
             region=region, scale=10, maxPixels=1e10,
         ))
         if not args.no_s2:
@@ -112,6 +110,10 @@ def main() -> None:
             pers.bandNames().getInfo()
         except ee.EEException:
             raise SystemExit(f"找不到资产 {aid}：请先运行 --stage persistence，并等 {args.area}_persistence_asset 任务完成。")
+        tasks.append(ee.batch.Export.image.toDrive(
+            image=pers, description=f"{args.area}_s1_persistence", folder=args.drive_folder,
+            region=region, scale=10, maxPixels=1e10,
+        ))
         tasks.append(ee.batch.Export.table.toDrive(
             collection=structure_polygons(pers, region, args.area),
             description=f"{args.area}_reference_draft", folder=args.drive_folder, fileFormat="GeoJSON",

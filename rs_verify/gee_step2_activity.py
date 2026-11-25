@@ -39,8 +39,9 @@ def add_water_fraction(fc: ee.FeatureCollection) -> ee.FeatureCollection:
 
 
 def activity_table(fc: ee.FeatureCollection, start: str, end: str) -> ee.FeatureCollection:
-    region = fc.geometry().bounds()
-    col = G.s1_collection(region, start, end).map(G.add_bright_band)
+    # 背景统计范围：所有多边形外包框再往外扩 2 km，保证里面有足够的空海面
+    region = fc.geometry().bounds().buffer(2000).bounds()
+    col = G.s1_collection(region, start, end).map(G.make_bright_fn(region))
     reducer = ee.Reducer.mean().combine(ee.Reducer.count(), sharedInputs=True)
 
     def per_image(img):

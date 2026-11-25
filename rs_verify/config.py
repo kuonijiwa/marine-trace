@@ -33,9 +33,8 @@ END_DATE = "2025-12-31"
 S1_COLLECTION = "COPERNICUS/S1_GRD"
 S1_POLARIZATION = "VV"          # 浮筏/网箱在 VV 上回波最明显
 SPECKLE_RADIUS_M = 15           # 斑点噪声：3x3 中值滤波（10 m 像元）
-BACKGROUND_RADIUS_M = 1500      # 估计"周围海面背景"的邻域半径
-BACKGROUND_PERCENTILE = 25      # 用 25% 分位数而不是中位数，避免大片筏区抬高背景
-BACKGROUND_SCALE_M = 60         # 背景在 60 m 粗分辨率上算，省计算量
+BACKGROUND_PERCENTILE = 25      # 每景海面背景 = 研究区海面像元的 25% 分位数（避免大片筏区抬高背景）
+BACKGROUND_SCALE_M = 100        # 背景在 100 m 粗分辨率上统计，省计算量（只影响背景值，不影响 10 m 判定）
 BRIGHT_DELTA_DB = 6.0           # 比背景亮 6 dB 以上 → 判为"人工设施像元"
 # 判定参考边界用：一个像元在养殖季里有多大比例的影像被判为"亮"，才算稳定的设施
 PERSISTENCE_THRESHOLD = 0.3
