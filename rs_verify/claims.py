@@ -51,9 +51,13 @@ def build_claims(
     max_refs: int | None = None,
     n_bearings: int = 4,
     seed: int = C.RANDOM_SEED,
+    raft_mask: "geo.RasterMask | None" = None,
 ) -> tuple[pd.DataFrame, dict]:
+    """raft_mask：全部参考养殖区的栅格掩膜（可选）。给了就用它算"假围栏压到养殖区的比例"，
+    这样即使挪到了没被抽中的别人地块上，也能被正确标出来；挪出研究区框的假围栏直接丢弃（框外情况未知）。"""
     rng = np.random.default_rng(seed)
     farm_type = C.STUDY_AREAS[area_key]["farm_type"]
+    bbox = C.STUDY_AREAS[area_key]["bbox"]
     start_year = int(C.START_DATE[:4]) + 1  # 第一年做"背景"，从第二年开始出声明
     end_year = int(C.END_DATE[:4])
 
@@ -108,7 +112,13 @@ def build_claims(
                 bearing = (base_bearing + b * 360.0 / n_bearings) % 360
                 g2 = geo.shift_geometry(f["geometry"], d, bearing)
                 spid = f"{pid}_S{d}_B{int(round(bearing)):03d}"
-                ov = geo.overlap_fraction(g2, ref_geoms)
+                if raft_mask is not None:
+                    cx, cy = geo.centroid(g2["coordinates"][0])
+                    if not (bbox[0] <= cx <= bbox[2] and bbox[1] <= cy <= bbox[3]):
+                        continue
+                    ov = raft_mask.fraction(g2)
+                else:
+                    ov = geo.overlap_fraction(g2, ref_geoms)
                 geom_feats.append(
                     {"type": "Feature", "geometry": g2,
                      "properties": {"pid": spid, "area_m2": area, "kind": "shifted", "ref_pid": pid,
@@ -127,11 +137,17 @@ def main() -> None:
     ap.add_argument("--area", required=True, choices=list(C.STUDY_AREAS))
     ap.add_argument("--reference", required=True, help="人工核对后的参考边界 GeoJSON")
     ap.add_argument("--max-refs", type=int, default=None, help="参考多边形太多时随机抽样")
+    ap.add_argument("--raft-reference", default=None,
+                    help="全部参考养殖区（如已发表数据集裁剪结果），用来判断假围栏有没有压到别人的养殖区")
     ap.add_argument("--n-bearings", type=int, default=4)
     ap.add_argument("--outdir", default=str(Path(C.DATA_DIR) / "claims"))
     args = ap.parse_args()
 
-    claims, geoms = build_claims(geo.load_geojson(args.reference), args.area, args.max_refs, args.n_bearings)
+    raft_mask = None
+    if args.raft_reference:
+        raft_mask = geo.RasterMask(geo.load_geojson(args.raft_reference), C.STUDY_AREAS[args.area]["bbox"])
+    claims, geoms = build_claims(geo.load_geojson(args.reference), args.area, args.max_refs, args.n_bearings,
+                                 raft_mask=raft_mask)
     out = Path(args.outdir)
     out.mkdir(parents=True, exist_ok=True)
     claims.to_csv(out / f"{args.area}_claims.csv", index=False)

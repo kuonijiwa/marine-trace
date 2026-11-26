@@ -129,6 +129,82 @@ def overlap_fraction(geom: dict, others: list[dict], n_grid: int = 30) -> float:
     return hit / total if total else 0.0
 
 
+class RasterMask:
+    """把一组多边形栅格化成规则网格上的 True/False（默认 20 m），用来快速算"某块地有多大比例是养殖区"。
+
+    已发表数据集里有面积几十平方公里、几千个顶点的大多边形，逐点判断太慢；
+    先栅格化一次，之后任何查询都只是数格子。
+    """
+
+    def __init__(self, fc: dict, bbox: Iterable[float], res_m: float = 20.0):
+        from matplotlib.path import Path as MPath
+        import numpy as np
+
+        self.w, self.s, self.e, self.n = bbox
+        lat0 = (self.s + self.n) / 2
+        dlon, dlat = _deg_per_m(lat0)
+        self.res_m = res_m
+        self.dx, self.dy = res_m * dlon, res_m * dlat
+        self.nx = int(math.ceil((self.e - self.w) / self.dx))
+        self.ny = int(math.ceil((self.n - self.s) / self.dy))
+        self.mask = np.zeros((self.ny, self.nx), dtype=bool)  # 行 0 = 最南
+        for f in fc["features"]:
+            g = f["geometry"]
+            if g is None:
+                continue
+            polys = [g["coordinates"]] if g["type"] == "Polygon" else g["coordinates"] if g["type"] == "MultiPolygon" else []
+            for rings in polys:
+                pw, ps, pe, pn = geometry_bounds({"type": "Polygon", "coordinates": rings})
+                i0, i1 = self._col(pw), self._col(pe) + 1
+                j0, j1 = self._row(ps), self._row(pn) + 1
+                i0, j0 = max(i0, 0), max(j0, 0)
+                i1, j1 = min(i1, self.nx), min(j1, self.ny)
+                if i0 >= i1 or j0 >= j1:
+                    continue
+                xs = self.w + (np.arange(i0, i1) + 0.5) * self.dx
+                ys = self.s + (np.arange(j0, j1) + 0.5) * self.dy
+                X, Y = np.meshgrid(xs, ys)
+                pts = np.column_stack([X.ravel(), Y.ravel()])
+                inside = MPath(np.asarray(rings[0])[:, :2]).contains_points(pts)
+                for hole in rings[1:]:
+                    inside &= ~MPath(np.asarray(hole)[:, :2]).contains_points(pts)
+                self.mask[j0:j1, i0:i1] |= inside.reshape(X.shape)
+
+    def _col(self, lon: float) -> int:
+        return int(math.floor((lon - self.w) / self.dx))
+
+    def _row(self, lat: float) -> int:
+        return int(math.floor((lat - self.s) / self.dy))
+
+    def fraction(self, geom: dict) -> float:
+        """geom 里有多大比例的格子是养殖区（格子落在网格外的按"不是"算）。"""
+        from matplotlib.path import Path as MPath
+        import numpy as np
+
+        gw, gs, ge, gn = geometry_bounds(geom)
+        i0, i1 = self._col(gw), self._col(ge) + 1
+        j0, j1 = self._row(gs), self._row(gn) + 1
+        ii = np.arange(i0, i1)
+        jj = np.arange(j0, j1)
+        X, Y = np.meshgrid(self.w + (ii + 0.5) * self.dx, self.s + (jj + 0.5) * self.dy)
+        pts = np.column_stack([X.ravel(), Y.ravel()])
+        polys = [geom["coordinates"]] if geom["type"] == "Polygon" else geom["coordinates"]
+        inside = np.zeros(len(pts), dtype=bool)
+        for rings in polys:
+            m = MPath(np.asarray(rings[0])[:, :2]).contains_points(pts)
+            for hole in rings[1:]:
+                m &= ~MPath(np.asarray(hole)[:, :2]).contains_points(pts)
+            inside |= m
+        if not inside.any():
+            return 0.0
+        I, J = np.meshgrid(ii, jj)
+        I, J = I.ravel()[inside], J.ravel()[inside]
+        ok = (I >= 0) & (I < self.nx) & (J >= 0) & (J < self.ny)
+        hit = np.zeros(len(I), dtype=bool)
+        hit[ok] = self.mask[J[ok], I[ok]]
+        return float(hit.mean())
+
+
 def bbox_polygon(bbox: Iterable[float]) -> dict:
     w, s, e, n = bbox
     return {"type": "Polygon", "coordinates": [[[w, s], [e, s], [e, n], [w, n], [w, s]]]}
