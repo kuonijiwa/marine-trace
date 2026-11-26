@@ -6,7 +6,9 @@
 登记库（模拟）：
   - 示范区内的真实养殖地块，随机分给养殖户 H001…（每户 1–3 块），每块一个海域使用权证号；
   - 示范区外的真实养殖地块，分给"区外养殖户" O001…（他们的证在示范区外）；
-  - 一部分示范区内的"空海面"多边形（卫星看没有养殖）也登记给养殖户 = 有证不养的空置海域。
+  - 一部分示范区内的空地块也登记给养殖户 = 有证不养（荒芜）的养殖证。位置由 C.IDLE_PLACEMENT 定：
+      gap（默认）养殖区内或旁边、四周有别人筏架的空地块——现实里荒废的证就在养殖区里；
+      open_sea    远处开阔海（原做法，作对照）。
 
 每批货：批次号（溯源 ID）、养殖户、地块、年份、数量（吨）。养殖户一年的产量拆成 2–6 批卖。
 
@@ -76,7 +78,18 @@ def polygon_info(claim_geoms: dict, zone_bbox: list[float]) -> pd.DataFrame:
     return pd.DataFrame(rows)
 
 
-def build_registry(polys: pd.DataFrame, rng: np.random.Generator, idle_share: float = 0.2) -> pd.DataFrame:
+def idle_candidates(polys: pd.DataFrame, placement: str | None = None) -> list[str]:
+    placement = placement or C.IDLE_PLACEMENT
+    col = {"gap": "gap", "open_sea": "open_sea"}.get(placement)
+    if col is None:
+        raise ValueError(f"未知的空挂证位置：{placement}")
+    if col not in polys:
+        polys = polys.assign(gap=annual.is_gap(polys))
+    return polys[polys[col] & polys["in_zone"]]["pid"].tolist()
+
+
+def build_registry(polys: pd.DataFrame, rng: np.random.Generator, idle_share: float = 0.2,
+                   placement: str | None = None) -> pd.DataFrame:
     farm = polys[polys["kind"] == "farm"]
     inz = farm[farm["in_zone"]]["pid"].tolist()
     outz = farm[~farm["in_zone"]]["pid"].tolist()
@@ -96,8 +109,8 @@ def build_registry(polys: pd.DataFrame, rng: np.random.Generator, idle_share: fl
 
     n_h = assign(inz, "H")
     assign(outz, "O")
-    # 空置海域：示范区内、卫星看是空海面的多边形，登记给部分区内养殖户（或单独的"只有空证"的户）
-    sea = polys[polys["open_sea"] & polys["in_zone"]]["pid"].tolist()
+    # 有证不养：示范区内的空地块，登记给部分区内养殖户（或单独的"只有空证"的户）
+    sea = idle_candidates(polys, placement)
     n_idle = min(len(sea), max(1, int(round(idle_share * len(inz)))))
     for j, pid in enumerate(rng.choice(sea, size=n_idle, replace=False) if n_idle else []):
         holder = f"H{int(rng.integers(1, n_h + 1)):03d}" if rng.random() < 0.7 else f"H{n_h + 1 + j:03d}"
@@ -305,6 +318,7 @@ def run_with_comp(comp: pd.DataFrame, am: dict, claims: pd.DataFrame, cover: dic
     calib, _ = annual.split_parcels(list(cover))
     polys["split"] = np.where(polys["ref_pid"].isin(calib), "calib", "test")
     polys["open_sea"] = annual.is_open_sea(polys)
+    polys["gap"] = annual.is_gap(polys)
     polys = polys.merge(polygon_info(claim_geoms, C.STUDY_AREAS[area]["zone_bbox"]), on="pid", how="left")
 
     rng = np.random.default_rng(seed + 7)
@@ -320,7 +334,8 @@ def run_with_comp(comp: pd.DataFrame, am: dict, claims: pd.DataFrame, cover: dic
                       "holders_outside": int(reg[reg["holder"].str.startswith("O")]["holder"].nunique()),
                       "farm_parcels_in_zone": int(((reg["use"] == "farm") & reg["in_zone"]).sum()),
                       "farm_parcels_outside": int(((reg["use"] == "farm") & ~reg["in_zone"]).sum()),
-                      "idle_permits": int((reg["use"] == "idle").sum())},
+                      "idle_permits": int((reg["use"] == "idle").sum()),
+                      "idle_placement": C.IDLE_PLACEMENT},
          **m}
     return m, tab, reg, v
 
@@ -329,9 +344,12 @@ def main() -> None:
     ap = argparse.ArgumentParser(description="完整流程模拟：登记 + 批次 + 三层核验")
     annual.add_common_args(ap)
     ap.add_argument("--outdir", default=None)
+    ap.add_argument("--idle-place", default=None, choices=["gap", "open_sea"])
     args = ap.parse_args()
     if args.metric:
         C.ACTIVITY_METRIC = args.metric
+    if args.idle_place:
+        C.IDLE_PLACEMENT = args.idle_place
     window = [int(x) for x in args.window.split(",")] if args.window else None
     claims, act_raw, cover = annual.load_inputs(args)
     m, tab, reg, v, sep = run(claims, act_raw, cover, geo.load_geojson(args.claim_geoms), args.area, window)

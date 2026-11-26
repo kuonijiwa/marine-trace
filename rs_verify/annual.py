@@ -68,6 +68,13 @@ def is_open_sea(polys: pd.DataFrame) -> pd.Series:
     return (polys["kind"] == "shifted") & (polys["shift_m"] >= 2000) & (polys["overlap_ref"] < 0.05)
 
 
+def is_gap(polys: pd.DataFrame, max_shift: float | None = None) -> pd.Series:
+    """养殖区内或旁边的"空地块"：离真实养殖地块不远（≤ 1000 m），但与参考筏区几乎不重叠。
+    注意参考数据较旧，其中一部分其实已有筏架——评估时另用目视真值核对。"""
+    max_shift = C.GAP_MAX_SHIFT_M if max_shift is None else max_shift
+    return (polys["kind"] == "shifted") & (polys["shift_m"] <= max_shift) & (polys["overlap_ref"] < 0.05)
+
+
 # ---------------------------------------------------------------------------
 # 窗口选择与合成
 # ---------------------------------------------------------------------------
@@ -146,6 +153,7 @@ def run(claims: pd.DataFrame, act_raw: pd.DataFrame, cover_ref: dict[str, float]
     calib, test = split_parcels(list(cover_ref))
     polys["split"] = np.where(polys["ref_pid"].isin(calib), "calib", "test")
     polys["open_sea"] = is_open_sea(polys)
+    polys["gap"] = is_gap(polys)
 
     farm_all = set(polys.loc[polys["kind"] == "farm", "pid"])
     sea_cal = set(polys.loc[polys["open_sea"] & (polys["split"] == "calib"), "pid"])
