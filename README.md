@@ -124,6 +124,24 @@ python -m rs_verify.quantity --area ailun --claims data/claims/ailun_claims.csv 
 卫星估计每块地的养殖覆盖率（一半地块标定、另一半检验），声明量超过"覆盖率 × 产能"的容差就报警。
 结果在 `outputs/ailun_quantity/`。
 
+### 5. 年度检查（主方法）+ 完整流程模拟
+
+筏架几个月不变，不需要逐景监测：每块地每年只在"检查窗口"里（由数据选出可分性最好的连续 3 个月），
+用海况合适（背景 −28 ~ −18 dB）的影像取中位数判断一次。
+
+```bash
+# 年度检查：选窗口、标定门限、检验组上的检出率
+python -m rs_verify.annual --area ailun --claims data/claims/ailun_claims.csv \
+    --claim-geoms data/claims/ailun_claim_geoms.geojson \
+    --raft-reference data/reference/ailun_fu2021_reference.geojson \
+    --activity data/activity/ailun_activity_*.csv --metric abs_excess
+# 完整流程：模拟海域登记库 + 批次溯源 ID + 三层核验（登记 / 卫星位置 / 卫星产量）+ 五类造假
+python -m rs_verify.trace_sim （参数同上）
+```
+
+结果在 `outputs/ailun_annual/` 和 `outputs/ailun_trace/`。登记库和批次是模拟的（真实登记数据不公开），
+地块和卫星结果是真实的；示范区边界是 `config.STUDY_AREAS[...]["zone_bbox"]` 里的近似范围。
+
 ### 诊断图
 
 ```bash
@@ -145,6 +163,8 @@ python -m pytest -q tests
 - 研究区范围框已按第一次结果放大（2026-11-25），仍需核对。
 - 第 2 步的主指标是"多边形平均雷达亮度 / 海面背景"（lin_ratio）：海带浮筏回波只比海面略亮，
   单像元"亮 6 dB"的规则会漏掉大部分浮筏（第一次试跑已证实）。
-- 爱伦湾的浮筏可能全年在海上（海带 11→5 月，龙须菜 7→10 月），时间核验能否成立要看第 2 步的活动曲线。
-- 产量检查需要单位面积产量（统计年鉴/文献），目前是占位，实验设计也待定。
+- 已证实：爱伦湾/桑沟湾筏架全年在海上（海带 11 月→次年 4–8 月，牡蛎、海参全年），卫星无法核验收获季节；
+  因此主方法改为"每年一个检查窗口"的年度检查（annual.py）。
+- 单位面积产量目前是粗估（config.KELP_FRESH_T_PER_HA），只影响展示的吨数；论文前换成统计年鉴原始出处。
+- 海域登记库、示范区边界是模拟的（真实数据不公开）。
 - 人工鱼礁在水下，卫星看不到；本方法只适用于有水面设施（筏架、网箱）的牧场。
