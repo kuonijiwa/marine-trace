@@ -164,7 +164,7 @@ def plot(df: pd.DataFrame, presets: pd.DataFrame, out: Path) -> None:
 def run(claims, act_raw, cover, s2_raw, claim_geoms, area, q_grid=Q_GRID, p_grid=P_GRID,
         seasons_grid=(1, 2), visual=None, s2_agg=None):
     f0, _, am = fusion.build(claims, act_raw, cover, s2_raw, s2_agg=s2_agg, idle_seasons=1)
-    f0 = f0.drop(columns=["decision", "present", "status", "evidence"])
+    f0 = f0.drop(columns=["decision", "present", "status", "evidence", "absent1"], errors="ignore")
     rows = []
     grid = sorted({(q, p) for q in q_grid for p in p_grid} | set(PRESETS.values()))
     for sn in seasons_grid:

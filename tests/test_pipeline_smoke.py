@@ -56,7 +56,7 @@ def test_fusion_and_tradeoff_end_to_end(tmp_path):
             assert m["s2_agg"] == agg and m["idle_seasons"] == 2
             assert m["test_gap"]["n"] > 0
             assert m["test_farm"]["absent"] <= 0.05
-            assert "list" in m["visual"]
+            assert "list" in m["visual"] and "screening_list" in m and "visual_two_level" in m
             fusion.plot(f, m["thresholds"], m, tmp_path / f"fusion_{agg}.png")
         df, presets = tradeoff.run(claims, act, cover, s2, gj, "ailun", q_grid=[0.02], p_grid=[0.01],
                                    seasons_grid=(1, 2), visual=visual, s2_agg="persist")
@@ -69,3 +69,21 @@ def test_fusion_and_tradeoff_end_to_end(tmp_path):
         assert "旋钮C_荒芜认定季数" in out.columns and "区内空地块年_判不在养" in out.columns
     finally:
         C.ACTIVITY_METRIC = old
+
+
+def test_paper_figs_from_tradeoff_table(tmp_path):
+    from rs_verify import paper_figs
+    rows = []
+    for sn in (1, 2):
+        for q in (0.01, 0.05, 0.2):
+            for p in (0.005, 0.02, 0.1):
+                rows.append({"idle_seasons": sn, "q_absent": q, "p_quantity": p, "honest_flagged": q / 10 + p / 5,
+                             "S2_idle_flagged": q * 3 / sn, "S4_launder_x1.5_flagged": p * 3,
+                             "S4_launder_x2_flagged": p * 6, "S4_launder_x3_flagged": min(1, p * 10),
+                             "visual_farmed_listed": q / 5 / sn, "visual_empty_listed": q * 3 / sn,
+                             "visual_list_truly_empty": 0.95})
+    path = tmp_path / "t.csv"
+    tradeoff.to_cn(pd.DataFrame(rows)).to_csv(path, index=False, encoding="utf-8-sig")
+    paper_figs.fig_tradeoff(paper_figs.load_table(path), tmp_path / "fig_tradeoff")
+    paper_figs.fig_workflow(tmp_path / "fig_workflow")
+    assert (tmp_path / "fig_tradeoff.png").exists() and (tmp_path / "fig_workflow.pdf").exists()
