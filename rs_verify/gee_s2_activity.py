@@ -10,9 +10,13 @@
   n_pix   有效（晴空海面）像元数
 输出：Drive/marine_trace/<area>_s2_<year>.csv，列 pid, date, tex, clear, b2, n_pix, area_m2, tile
 
+--inner-buffer M：统计前把每个地块向内收缩 M 米（建议 50 m ≈ 5 个像元），只看地块内部。
+  原因：空地块四周往往是别人的筏架，3×3 纹理窗口在地块边缘会"看到"邻居的筏格，空地块被误判"在养"。
+  收缩后 area_m2 换成收缩后的面积；输出文件名为 <area>_s2in<M>_<year>.csv，不覆盖原文件。
+
 用法：
   python -m rs_verify.gee_s2_activity --area ailun --geojson data/claims/ailun_claim_geoms.geojson \
-      --project <PROJECT> --by-year
+      --project <PROJECT> --by-year [--inner-buffer 50]
 """
 from __future__ import annotations
 
@@ -27,6 +31,18 @@ from .gee_step2_activity import stats_region, to_ee_fc
 
 SELECTORS = ["pid", "date", "tex", "clear", "b2", "n_pix", "area_m2", "tile"]
 MAX_SCENE_CLOUD = 40  # 整景云量上限（%），只是粗筛，真正的"好图"在本地按多边形晴空比例和雾霾挑
+
+
+def shrink(fc: ee.FeatureCollection, inner_m: float) -> ee.FeatureCollection:
+    """每个地块向内收缩 inner_m 米，并把 area_m2 换成收缩后的面积（覆盖率按新面积算）。"""
+    if not inner_m:
+        return fc
+
+    def one(f):
+        g = ee.Feature(f).geometry().buffer(-float(inner_m), 1)
+        return ee.Feature(f).setGeometry(g).set("area_m2", g.area(1))
+
+    return fc.map(one).filter(ee.Filter.gt("area_m2", 0))
 
 
 def s2_collection(region: ee.Geometry, start: str, end: str) -> ee.ImageCollection:
@@ -72,12 +88,14 @@ def main() -> None:
     ap.add_argument("--start", default=C.START_DATE)
     ap.add_argument("--end", default=C.END_DATE)
     ap.add_argument("--by-year", action="store_true")
+    ap.add_argument("--inner-buffer", type=float, default=0.0, help="地块向内收缩米数（建议 50）")
     args = ap.parse_args()
 
     G.init(args.project)
     gj = geo.load_geojson(args.geojson)
-    fc = to_ee_fc(gj)
+    fc = shrink(to_ee_fc(gj), args.inner_buffer)
     region = stats_region(gj, pad_m=0)
+    tag = f"_s2in{int(args.inner_buffer)}" if args.inner_buffer else "_s2"
     print("多边形数：", fc.size().getInfo())
     if args.by_year:
         y0, y1 = int(args.start[:4]), int(args.end[:4])
@@ -88,9 +106,9 @@ def main() -> None:
         n = s2_collection(region, start, end).size().getInfo()
         task = ee.batch.Export.table.toDrive(
             collection=per_scene_table(fc, start, end, region),
-            description=f"{args.area}_s2{suffix}", folder=args.drive_folder, fileFormat="CSV", selectors=SELECTORS)
+            description=f"{args.area}{tag}{suffix}", folder=args.drive_folder, fileFormat="CSV", selectors=SELECTORS)
         task.start()
-        print(f"已提交 {args.area}_s2{suffix}（{start} ~ {end}，{n} 景）：", task.id)
+        print(f"已提交 {args.area}{tag}{suffix}（{start} ~ {end}，{n} 景）：", task.id)
     print("完成后把 CSV 放到 data/activity_s2/ 下。")
 
 

@@ -51,3 +51,31 @@ def test_load_visual_merges_rounds(tmp_path):
     pd.DataFrame({"pid": ["P2", "P3"], "year": [2020, 2021], "visual": ["yes", "no"]}).to_csv(b, index=False)
     v = load_visual([a, b]).set_index("pid")
     assert len(v) == 3 and v.loc["P2", "visual"] == "yes"
+
+
+def test_persist_aggregation_suppresses_one_off_texture():
+    from rs_verify import config as C
+    # 5 张好图：真筏架每张都有纹理；海面只有 2 张偶然出现纹理（海浪）
+    rows = []
+    for pid, texs in [("F", [0.10, 0.11, 0.12, 0.10, 0.11]), ("W", [0.12, 0.11, 0.02, 0.02, 0.02])]:
+        for i, t in enumerate(texs):
+            rows.append({"pid": pid, "date": f"2021-0{i + 1}-10", "tex": t, "clear": 1.0, "b2": 0.03 + i * 0.001,
+                         "n_pix": 2500, "area_m2": 250000})
+    med = s2_annual(pd.DataFrame(rows), [2021], agg="median").set_index("pid")["tex_s2"]
+    per = s2_annual(pd.DataFrame(rows), [2021], agg="persist").set_index("pid")["tex_s2"]
+    assert per["F"] >= 0.10 and per["W"] <= 0.03        # 持续性：海浪被压下去，筏架不受影响
+    assert med["W"] < med["F"]
+    assert C.S2_PERSIST_Q == 0.25
+
+
+def test_idle_rule_two_seasons():
+    from rs_verify.fusion import apply_idle_rule
+    f = pd.DataFrame({"pid": ["A", "A", "A", "B", "B"], "year": [2020, 2021, 2022, 2021, 2022],
+                      "decision": ["present", "absent", "absent", "absent", "present"],
+                      "present": [1.0, 0.0, 0.0, 0.0, 1.0], "status": "ok", "evidence": ""})
+    one = apply_idle_rule(f, 1)
+    assert (one["decision"] == "absent").sum() == 3
+    two = apply_idle_rule(f, 2).set_index(["pid", "year"])["decision"]
+    assert two[("A", 2021)] == "review"      # 第一季没看到 → 待复核
+    assert two[("A", 2022)] == "absent"      # 连续第二季没看到 → 进名单
+    assert two[("B", 2021)] == "review"      # 没有上一季数据 → 待复核

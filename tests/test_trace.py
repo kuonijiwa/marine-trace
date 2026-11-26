@@ -20,6 +20,7 @@ def _world():
         "ref_pid": ["A", "B", "C", "D", "E", "F", "A", "B"],
         "kind": ["farm"] * 6 + ["shifted"] * 2,
         "open_sea": [False] * 6 + [True] * 2,
+        "gap": [False] * 6 + [True] * 2,
         "in_zone": [True, True, True, True, False, False, True, True],
         "area_ha": [25.0] * 8, "lon": 0.0, "lat": 0.0, "split": "test",
     })
@@ -46,6 +47,16 @@ def test_layers_stop_the_right_scenarios():
     assert cases[cases["scenario"] == "honest"]["caught"].isna().all()
     launder3 = v[(v["scenario"] == "S4_launder") & (v["factor"] == 3.0)]
     assert (launder3.groupby("case")["layer"].apply(lambda s: (s == "quantity").any())).all()
+
+
+def test_idle_placement_and_gap():
+    from rs_verify.annual import is_gap
+    p = pd.DataFrame({"kind": ["farm", "shifted", "shifted", "shifted"], "shift_m": [0, 500, 500, 5000],
+                      "overlap_ref": [1.0, 0.0, 0.3, 0.0]})
+    assert is_gap(p).tolist() == [False, True, False, False]
+    polys = pd.DataFrame({"pid": ["G", "O"], "in_zone": [True, True], "gap": [True, False], "open_sea": [False, True]})
+    assert trace_sim.idle_candidates(polys, "gap") == ["G"]
+    assert trace_sim.idle_candidates(polys, "open_sea") == ["O"]
 
 
 def test_tradeoff_table_columns():
