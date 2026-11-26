@@ -84,6 +84,12 @@ INSPECTION_WINDOW_MONTHS = None
 INSPECTION_WINDOW_LENGTH = 3
 MIN_SCENES_PER_YEAR = 3         # 窗口内好天气影像少于此数 → 该年"无法核验"
 
+# 雷达 + 光学融合（fusion.py）：精度优先，宁可"待复核"也不冤枉诚实渔民
+S2_BEST_SCENES = 5              # 每个地块每年最多用几张"好"光学图（晴空、雾霾最轻）
+S2_MIN_CLEAR = 0.95             # 多边形内晴空像元比例下限
+FUSION_LOW_QUANTILE = 0.02      # "没看到筏"门限 = 真实养殖地块该指标的 2% 分位
+QTY_FALSE_ALARM_TARGET = 0.01   # 产量核验容差 τ = 诚实养殖户产量比的 99% 分位（约 1% 误报）
+
 # 产量一致性检查：每公顷有效养殖面积每季最大产量（吨，鲜重）
 # TODO: 必须从文献/统计年鉴取值，现在是占位数，不能用于论文
 YIELD_CAPACITY_T_PER_HA = {

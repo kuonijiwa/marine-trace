@@ -56,11 +56,11 @@ from . import annual  # noqa: E402
 from . import config as C  # noqa: E402
 from . import geo  # noqa: E402
 
-FALSE_ALARM_TARGET = 0.05
 COLLUSION_EXTRA = [0.2, 0.5, 1.0, 2.0]
-LAYERS = ["registry", "presence", "insufficient", "quantity", "passed"]
-LAYER_CN = {"registry": "登记层", "presence": "卫星位置层", "insufficient": "无法核验",
-            "quantity": "卫星产量层", "passed": "未拦住"}
+LAYERS = ["registry", "presence", "quantity", "review", "insufficient", "passed"]
+LAYER_CN = {"registry": "登记层", "presence": "卫星位置层", "quantity": "卫星产量层",
+            "review": "待复核", "insufficient": "无法核验", "passed": "通过"}
+FLAG_LAYERS = {"registry", "presence", "quantity"}   # 判为"可疑"（会直接告诉买家/渔民有问题）
 
 
 # ---------------------------------------------------------------------------
@@ -195,7 +195,11 @@ def verify_batches(b: pd.DataFrame, reg: pd.DataFrame, comp: pd.DataFrame, tau: 
         if not (o["valid_from"] <= r.year <= o["valid_to"]):
             layer.append("registry"); reason.append("权证不在有效期"); cap.append(np.nan)  # noqa: E702
             continue
-        if (r.pid, r.year) not in c.index or c.loc[(r.pid, r.year), "status"] != "ok":
+        st = c.loc[(r.pid, r.year), "status"] if (r.pid, r.year) in c.index else "insufficient"
+        if st == "review":
+            layer.append("review"); reason.append("卫星证据不一致，待复核（不判可疑）"); cap.append(np.nan)  # noqa: E702
+            continue
+        if st != "ok":
             layer.append("insufficient"); reason.append("卫星影像不足，无法核验"); cap.append(np.nan)  # noqa: E702
             continue
         s = c.loc[(r.pid, r.year)]
@@ -209,8 +213,8 @@ def verify_batches(b: pd.DataFrame, reg: pd.DataFrame, comp: pd.DataFrame, tau: 
             continue
         layer.append("passed"); reason.append("通过")  # noqa: E702
     out["layer"], out["reason"], out["capacity_t"] = layer, reason, cap
-    out["verdict"] = np.where(out["layer"] == "passed", "通过",
-                              np.where(out["layer"] == "insufficient", "无法核验", "可疑"))
+    out["verdict"] = np.select([out["layer"] == "passed", out["layer"] == "review", out["layer"] == "insufficient"],
+                               ["通过", "待复核", "无法核验"], default="可疑")
     return out
 
 
@@ -221,7 +225,7 @@ def calibrate_tau(reg: pd.DataFrame, comp: pd.DataFrame, b: pd.DataFrame, y_t_ha
     tot = tot[(tot["status"] == "ok") & (tot["present"] == 1.0)]
     area = reg.set_index("pid")["area_ha"]
     ratio = tot["qty_t"] / (tot["cover_sat"] * tot["pid"].map(area) * y_t_ha).clip(lower=1e-9)
-    return float(np.quantile(ratio, 1 - FALSE_ALARM_TARGET))
+    return float(np.quantile(ratio, 1 - C.QTY_FALSE_ALARM_TARGET))
 
 
 # ---------------------------------------------------------------------------
@@ -244,18 +248,22 @@ def summarise(v: pd.DataFrame) -> tuple[dict, pd.DataFrame]:
     tab["n_cases"] = cases.groupby("scenario").size()
     m = {"n_cases_test": int(len(cases))}
     for sc, g in cases.groupby("scenario"):
-        m[sc] = {"n_cases": int(len(g)), "detected": float((g["caught_by"] != "passed").mean()),
+        m[sc] = {"n_cases": int(len(g)),
+                 "flagged_suspicious": float(g["caught_by"].isin(FLAG_LAYERS).mean()),
+                 "detected": float((g["caught_by"] != "passed").mean()),
                  "caught_by": {k: float((g["caught_by"] == k).mean()) for k in LAYERS},
                  "volume_flagged_share": float(g["vol_flagged"].mean())}
         if sc in ("S4_launder", "S5_collusion"):
             m[sc]["detected_by_factor"] = {float(f): float((x["caught_by"] != "passed").mean())
                                            for f, x in g.groupby("factor")}
+            m[sc]["flagged_by_factor"] = {float(f): float(x["caught_by"].isin(FLAG_LAYERS).mean())
+                                          for f, x in g.groupby("factor")}
     return m, tab
 
 
 def plot(tab: pd.DataFrame, m: dict, out: Path) -> None:
     colors = {"registry": "tab:purple", "presence": "tab:blue", "insufficient": "tab:gray",
-              "quantity": "tab:orange", "passed": "#dddddd"}
+              "quantity": "tab:orange", "review": "khaki", "passed": "#dddddd"}
     order = [s for s in ["honest", "S1_outside", "S2_idle", "S3_neighbour", "S4_launder", "S5_collusion"] if s in tab.index]
     fig, axes = plt.subplots(1, 2, figsize=(11, 4), gridspec_kw={"width_ratios": [1.4, 1]})
     bottom = np.zeros(len(order))
@@ -273,7 +281,7 @@ def plot(tab: pd.DataFrame, m: dict, out: Path) -> None:
             xs = sorted(d)
             axes[1].plot(xs, [d[x] for x in xs], "o-", label=lab)
     if "honest" in m:
-        axes[1].axhline(m["honest"]["detected"], color="gray", ls="--", label="Honest (false alarm)")
+        axes[1].axhline(m["honest"]["flagged_suspicious"], color="gray", ls="--", label="Honest flagged (false alarm)")
     axes[1].set_ylim(0, 1.05)
     axes[1].set_xlabel("Declared / actual production")
     axes[1].set_ylabel("Detected")
@@ -286,6 +294,13 @@ def plot(tab: pd.DataFrame, m: dict, out: Path) -> None:
 def run(claims: pd.DataFrame, act_raw: pd.DataFrame, cover: dict[str, float], claim_geoms: dict, area: str,
         window: list[int] | None = None, seed: int = C.RANDOM_SEED, y_t_ha: float = C.KELP_FRESH_T_PER_HA):
     am, sep, comp = annual.run(claims, act_raw, cover, window)
+    m, tab, reg, v = run_with_comp(comp, am, claims, cover, claim_geoms, area, seed, y_t_ha)
+    return m, tab, reg, v, sep
+
+
+def run_with_comp(comp: pd.DataFrame, am: dict, claims: pd.DataFrame, cover: dict[str, float], claim_geoms: dict,
+                  area: str, seed: int = C.RANDOM_SEED, y_t_ha: float = C.KELP_FRESH_T_PER_HA):
+    """comp：每个多边形 × 年的卫星结论（列 pid, year, status[ok/review/insufficient], present, cover_sat, cover_ref）。"""
     polys = annual.polygon_table(claims)
     calib, _ = annual.split_parcels(list(cover))
     polys["split"] = np.where(polys["ref_pid"].isin(calib), "calib", "test")
@@ -307,7 +322,7 @@ def run(claims: pd.DataFrame, act_raw: pd.DataFrame, cover: dict[str, float], cl
                       "farm_parcels_outside": int(((reg["use"] == "farm") & ~reg["in_zone"]).sum()),
                       "idle_permits": int((reg["use"] == "idle").sum())},
          **m}
-    return m, tab, reg, v, sep
+    return m, tab, reg, v
 
 
 def main() -> None:

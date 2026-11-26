@@ -142,6 +142,23 @@ python -m rs_verify.trace_sim （参数同上）
 结果在 `outputs/ailun_annual/` 和 `outputs/ailun_trace/`。登记库和批次是模拟的（真实登记数据不公开），
 地块和卫星结果是真实的；示范区边界是 `config.STUDY_AREAS[...]["zone_bbox"]` 里的近似范围。
 
+### 6. 雷达 + 光学融合（精度优先）与目视判读验证
+
+误判核查图显示：雷达判"不在养"的养殖地块，同年光学图上大多筏格清楚 → 加光学作第二证人。
+判定三态：**通过**（任一证人明确见筏）/ **可疑**（两个证人都明确没见）/ **待复核**（其余）。
+"没见"门限取真实养殖地块的 2% 分位，诚实渔民被判可疑的概率压到很低。
+
+```bash
+# a. 光学逐景指标导出（GEE，每年一个任务）→ CSV 放到 data/activity_s2/
+python -m rs_verify.gee_s2_activity --area ailun --geojson data/claims/ailun_claim_geoms.geojson --project <PROJECT> --by-year
+# b. 融合判定 + 完整流程
+python -m rs_verify.fusion （annual 的参数） --s2 data/activity_s2/ailun_s2_*.csv --metric abs_excess --trace
+# c. 目视判读样本（盲判图集）
+python -m rs_verify.visual_sample --area ailun --project <PROJECT> --claim-geoms data/claims/ailun_claim_geoms.geojson \
+    --fusion outputs/ailun_fusion/fusion_composite.csv --s2 data/activity_s2/ailun_s2_*.csv
+# d. 判读完后再跑 b，加 --visual-labels <判读表>，按目视真值评估
+```
+
 ### 诊断图
 
 ```bash
