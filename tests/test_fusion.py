@@ -8,7 +8,8 @@ def test_s2_best_scenes_and_decision():
     rows = []
     for pid, tex in [("F", 0.12), ("S", 0.03)]:
         for i, b2 in enumerate([0.03, 0.04, 0.09, 0.05, 0.06, 0.035, 0.08]):
-            rows.append({"pid": pid, "date": f"2021-0{i % 9 + 1}-1{i}", "tex": tex if b2 < 0.085 else 0.01,
+            day = ["2021-01-10", "2021-02-11", "2021-03-12", "2021-04-13", "2021-05-14", "2020-12-15", "2021-01-20"][i]
+            rows.append({"pid": pid, "date": day, "tex": tex if b2 < 0.085 else 0.01,
                          "clear": 1.0 if i != 3 else 0.5, "b2": b2, "n_pix": 2500, "area_m2": 250000})
     s2 = s2_annual(pd.DataFrame(rows), [2021], k_best=5)
     f_ = s2.set_index("pid")
@@ -33,3 +34,10 @@ def test_precision_first_decision():
     one = pd.DataFrame({"m_sar": [0.0, 0.0], "tex_s2": [0.2, np.nan]})
     r = decide(one, th)["decision"].tolist()
     assert r == ["present", "review"]
+
+
+def test_s2_only_kelp_season():
+    rows = [{"pid": "F", "date": d, "tex": t, "clear": 1.0, "b2": 0.03, "n_pix": 2500, "area_m2": 250000}
+            for d, t in [("2021-08-10", 0.01), ("2021-09-10", 0.01), ("2020-12-20", 0.12), ("2021-03-01", 0.12)]]
+    s2 = s2_annual(pd.DataFrame(rows), [2021], k_best=5).set_index("pid")
+    assert s2.loc["F", "n_s2"] == 2 and abs(s2.loc["F", "tex_s2"] - 0.12) < 1e-9  # 夏秋图不用；12 月算到 2021 季

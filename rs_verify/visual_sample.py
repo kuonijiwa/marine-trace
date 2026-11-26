@@ -4,8 +4,9 @@
 目视判读光学图是遥感验证的标准做法：浮筏一格一格非常清楚，人眼判断可靠。
 
 盲判：小图标题只有编号，不显示雷达/光学的判定和地块类型，避免判读时被结论带偏。
-分层：{养殖地块, 空海面, 挪到邻近养殖区的围栏} × {雷达说有, 雷达说没有}，每层最多 n 个。
-选图：该多边形该年所有晴空（≥95%）且覆盖完整的光学景里，蓝波段最低（雾霾最轻）的一张。
+选图：该多边形该海带季（12–5 月）所有晴空（≥95%）且覆盖完整的光学景里，蓝波段最低（雾霾最轻）的一张。
+     （第一轮发现 6–11 月的图上筏架几乎看不见，判读不可信，所以只用 12–5 月。）
+分层：{养殖地块, 空海面, 邻近养殖区} × 系统融合结论 {在养, 待复核, 可疑}，重点检验"可疑"里有没有冤枉。
 
 输入：fusion.py 的 fusion_composite.csv、S2 导出表、声明多边形 GeoJSON。
 输出（outputs/<area>_visual/）：
@@ -41,12 +42,10 @@ PER_PAGE = 36
 
 
 def best_dates(s2_raw: pd.DataFrame, min_clear: float = C.S2_MIN_CLEAR) -> pd.DataFrame:
-    a = s2_raw.copy()
-    a["pid"] = a["pid"].astype(str)
-    a["date"] = pd.to_datetime(a["date"])
-    a["year"] = a["date"].dt.year
-    a["cov"] = pd.to_numeric(a["n_pix"]) * 100.0 / pd.to_numeric(a["area_m2"])
-    a = a[(a["clear"] >= min_clear) & (a["cov"] >= 0.8)].dropna(subset=["b2"])
+    """每个多边形每个海带季：最清晰（晴空、雾霾最轻）的一景。只在 12–5 月里挑（夏秋筏架看不见）。"""
+    from .fusion import s2_good_scenes
+
+    a = s2_good_scenes(s2_raw, min_clear=min_clear)
     a = a.sort_values("b2").drop_duplicates(["pid", "year"])
     return a[["pid", "year", "date", "b2", "tile"]]
 
@@ -59,7 +58,9 @@ def stratified(f: pd.DataFrame, dates: pd.DataFrame, n: int, seed: int = C.RANDO
     th_sar = f["T_sar"].iloc[0] if "T_sar" in f else np.nanmedian(f["m_sar"])
     f["sar_says"] = np.where(f["m_sar"] >= th_sar, "sar_yes", "sar_no")
     f = f[f["group"] != "other"].merge(dates, on=["pid", "year"], how="inner")
-    parts = [g.sample(min(n, len(g)), random_state=seed) for _, g in f.groupby(["group", "sar_says"])]
+    # 分层：地块类型 × 系统结论（重点多抽"可疑"和"待复核"——它们直接决定渔民会不会被冤枉）
+    strat = "decision" if "decision" in f.columns else "sar_says"
+    parts = [g.sample(min(n, len(g)), random_state=seed) for _, g in f.groupby(["group", strat])]
     out = pd.concat(parts).sample(frac=1, random_state=seed).reset_index(drop=True)  # 打乱顺序，盲判
     out.insert(0, "no", np.arange(1, len(out) + 1))
     return out
@@ -146,11 +147,12 @@ def main() -> None:
 
     od = Path(args.outdir or Path(C.OUTPUT_DIR) / f"{args.area}_visual")
     od.mkdir(parents=True, exist_ok=True)
-    idx = sample[["no", "pid", "year", "date", "group", "sar_says"]].copy()
+    cols = ["no", "pid", "year", "date", "group", "sar_says"] + (["decision"] if "decision" in sample else [])
+    idx = sample[cols].copy()
     idx["date"] = pd.to_datetime(idx["date"]).dt.strftime("%Y-%m-%d")
     idx["visual"] = ""
     idx.to_csv(od / "visual_index.csv", index=False, encoding="utf-8-sig")
-    print(f"样本 {len(sample)} 个：", sample.groupby(["group", "sar_says"]).size().to_dict())
+    print(f"样本 {len(sample)} 个：", sample.groupby(["group", "decision" if "decision" in sample else "sar_says"]).size().to_dict())
     pages(sample, geoms, make_fetcher(args.project), od)
     print("输出目录：", od)
 

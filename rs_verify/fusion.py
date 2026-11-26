@@ -2,8 +2,9 @@
 
 两个证人：
   雷达 S1（全天候，但会漏看）：全年好海况影像的指标中位数 m_sar（annual.py，窗口 = 全年）。
-  光学 S2（看得清，但怕云雾）：每年只挑几张"好图"——多边形内晴空 ≥ 95%、雾霾最轻（蓝波段最低）的
-                               最多 K 张（默认 5），取筏格纹理的中位数 tex_s2。
+  光学 S2（看得清，但怕云雾）：每个海带季（12–5 月）只挑几张"好图"——多边形内晴空 ≥ 95%、
+                               雾霾最轻（蓝波段最低）的最多 K 张（默认 5），取筏格纹理的中位数 tex_s2。
+                               6–11 月海带收完后筏架在光学图上几乎看不见，不用。
 
 判定（每个地块 × 每年，三种结论）：
   在养（通过）      任一证人明确看到有筏：m_sar ≥ T_sar 或 tex_s2 ≥ T_s2
@@ -56,19 +57,32 @@ FULL_YEAR = list(range(1, 13))
 # ---------------------------------------------------------------------------
 # 光学：挑好图
 # ---------------------------------------------------------------------------
-def s2_annual(s2_raw: pd.DataFrame, years: list[int], k_best: int = C.S2_BEST_SCENES,
-              min_clear: float = C.S2_MIN_CLEAR, min_cov: float = 0.8) -> pd.DataFrame:
+def s2_good_scenes(s2_raw: pd.DataFrame, months: list[int] | None = None, min_clear: float = C.S2_MIN_CLEAR,
+                   min_cov: float = 0.8) -> pd.DataFrame:
+    """海带季内、多边形晴空且覆盖完整的光学景；year = 海带季的"结束年"（12 月算下一年）。"""
+    months = months or C.S2_MONTHS
     a = s2_raw.copy()
     a["pid"] = a["pid"].astype(str)
     a["date"] = pd.to_datetime(a["date"])
-    a["year"] = a["date"].dt.year
-    a = a[a["year"].isin(years)]
+    a = a[a["date"].dt.month.isin(months)]
+    a["year"] = annual.season_year(a["date"], months)
     for c in ("tex", "clear", "b2", "n_pix", "area_m2"):
         a[c] = pd.to_numeric(a[c], errors="coerce")
     a["cov"] = a["n_pix"] * PIXEL_AREA_M2 / a["area_m2"]
     a = a[(a["clear"] >= min_clear) & (a["cov"] >= min_cov)].dropna(subset=["tex", "b2"])
-    # 同一天两个图幅都覆盖时只留覆盖最全的
-    a = a.sort_values("n_pix", ascending=False).drop_duplicates(["pid", "date"])
+    return a.sort_values("n_pix", ascending=False).drop_duplicates(["pid", "date"])
+
+
+def s2_annual(s2_raw: pd.DataFrame, years: list[int], k_best: int = C.S2_BEST_SCENES,
+              min_clear: float = C.S2_MIN_CLEAR, min_cov: float = 0.8, months: list[int] | None = None) -> pd.DataFrame:
+    a = s2_good_scenes(s2_raw, months, min_clear, min_cov)
+    a = a[a["year"].isin(years)]
+    return _best_k(a, k_best)
+
+
+def _best_k(a: pd.DataFrame, k_best: int) -> pd.DataFrame:
+    if a.empty:
+        return pd.DataFrame(columns=["pid", "year", "tex_s2", "n_s2", "b2_s2"])
     # 每个多边形每年：雾霾最轻（b2 最低）的 K 张
     a = a.sort_values("b2").groupby(["pid", "year"]).head(k_best)
     return a.groupby(["pid", "year"]).agg(tex_s2=("tex", "median"), n_s2=("tex", "size"),
@@ -145,8 +159,12 @@ def evaluate(f: pd.DataFrame, visual: pd.DataFrame | None = None) -> dict:
         v = visual.copy()
         v["pid"] = v["pid"].astype(str)
         v = v.merge(f[["pid", "year", "decision", "m_sar", "tex_s2"]], on=["pid", "year"], how="inner")
+        if "date" in v.columns:  # 只用海带季图片上的判读（夏秋图上筏架看不见，"no" 不可信）
+            v = v[pd.to_datetime(v["date"]).dt.month.isin(C.S2_MONTHS)]
         v = v[v["visual"].isin(["yes", "no"])]
         m["visual"] = {"n_labelled": int(len(v)),
+                       "by_decision": {k: {"n": int(len(g)), "raft_yes_share": float((g["visual"] == "yes").mean())}
+                                       for k, g in v.groupby("decision")},
                        "raft_yes": rates(v[v["visual"] == "yes"]),
                        "raft_no": rates(v[v["visual"] == "no"])}
         th = f.attrs["th"]
