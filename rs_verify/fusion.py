@@ -24,6 +24,8 @@
 
 输出（outputs/<area>_fusion/）：
   fusion_metrics.json, fusion_composite.csv（每个多边形 × 年的两证人数值与结论）, fusion_check.png
+  screening_list.csv  两级筛查名单：整改通知（本季未见筏）/ 吊销核查（连续两季未见筏），
+                      对应新《渔业法》第六十五条第二款"责令限期开发利用 → 逾期吊销养殖证"
   （--trace 时另有 trace_* 文件，同 trace_sim.py）
 
 用法：
@@ -163,6 +165,27 @@ def apply_idle_rule(f: pd.DataFrame, seasons: int | None = None) -> pd.DataFrame
     return f
 
 
+LEVEL_NOTICE = "整改通知"      # 本季两证人都没看到筏：通知持证人限期说明/恢复养殖（第六十五条"责令限期开发利用"）
+LEVEL_REVOKE = "吊销核查"      # 连续两季都没看到：交渔政现场核查，作为"逾期未开发利用"吊销程序的线索
+
+
+def screening_list(f: pd.DataFrame) -> pd.DataFrame:
+    """两级筛查名单（按一季规则的"不在养"列出，再看上一季）：
+       整改通知 = 本季没看到、上季看到或无数据；吊销核查 = 本季、上季都没看到。
+    f 需有 absent1 列（一季规则下是否判"不在养"）；没有时用 decision == absent。"""
+    a = f["absent1"] if "absent1" in f else (f["decision"] == "absent")
+    hit = f[a.astype(bool)].copy()
+    both = set(zip(hit["pid"], hit["year"]))
+    hit["level"] = [LEVEL_REVOKE if (p, y - 1) in both else LEVEL_NOTICE for p, y in zip(hit["pid"], hit["year"])]
+    no = np.zeros(len(hit), bool)
+    hit["group"] = np.select([(hit["kind"] == "farm").to_numpy() if "kind" in hit else no,
+                              hit["gap"].to_numpy(bool) if "gap" in hit else no,
+                              hit["open_sea"].to_numpy(bool) if "open_sea" in hit else no],
+                             ["farm", "gap", "open_sea"], default="other")
+    cols = [c for c in ["pid", "year", "level", "group", "split", "m_sar", "tex_s2", "n_sar", "n_s2"] if c in hit]
+    return hit[cols].sort_values(["level", "pid", "year"]).reset_index(drop=True)
+
+
 def rates(d: pd.DataFrame) -> dict:
     n = len(d)
     if n == 0:
@@ -187,6 +210,12 @@ def evaluate(f: pd.DataFrame, visual: pd.DataFrame | None = None) -> dict:
             "sea_present": float((te.loc[te["open_sea"], "m_sar"] >= f.attrs["th"]["T_sar"]).mean()),
         },
     }
+    if "absent1" in f:
+        lst = screening_list(f)
+        lte = lst[lst["split"] == "test"] if "split" in lst else lst
+        m["screening_list"] = {lv: {g: int(((lte["level"] == lv) & (lte["group"] == g)).sum())
+                                    for g in ["farm", "gap", "open_sea"]}
+                               for lv in [LEVEL_NOTICE, LEVEL_REVOKE]}
     if visual is not None and len(visual):
         v = visual.copy()
         v["pid"] = v["pid"].astype(str)
@@ -195,6 +224,14 @@ def evaluate(f: pd.DataFrame, visual: pd.DataFrame | None = None) -> dict:
         if "date" in v.columns:  # 只用海带季图片上的判读（夏秋图上筏架看不见，"no" 不可信）
             v = v[pd.to_datetime(v["date"]).dt.month.isin(C.S2_MONTHS)]
         v = v[v["visual"].isin(["yes", "no"])]
+        if "absent1" in f:   # 两级名单在目视真值上的表现
+            lst = screening_list(f)[["pid", "year", "level"]]
+            vl = v.merge(lst, on=["pid", "year"], how="left")
+            m["visual_two_level"] = {
+                lv: {"n": int((vl["level"] == lv).sum()),
+                     "truly_empty": float((vl.loc[vl["level"] == lv, "visual"] == "no").mean())
+                     if (vl["level"] == lv).any() else float("nan")}
+                for lv in [LEVEL_NOTICE, LEVEL_REVOKE]}
         m["visual"] = {"n_labelled": int(len(v)),
                        "by_decision": {k: {"n": int(len(g)), "raft_yes_share": float((g["visual"] == "yes").mean())}
                                        for k, g in v.groupby("decision")},
@@ -257,7 +294,9 @@ def build(claims, act_raw, cover, s2_raw, visual=None, s2_agg=None, idle_seasons
     f = f.drop(columns=["present", "status"]).merge(s2, on=["pid", "year"], how="left")
     # 没有雷达行、只有光学的多边形-年（少见）也补进来
     th = calibrate(f)
-    f = apply_idle_rule(decide(f, th), idle_seasons)
+    f = decide(f, th)
+    f["absent1"] = f["decision"] == "absent"          # 一季规则下的"不在养"，两级名单用
+    f = apply_idle_rule(f, idle_seasons)
     f.attrs["th"] = th
     m = evaluate(f, visual)
     m = {"thresholds": th, "s2_agg": s2_agg or C.S2_AGG,
@@ -306,6 +345,7 @@ def main() -> None:
     with open(od / "fusion_metrics.json", "w", encoding="utf-8") as fh:
         json.dump(m, fh, ensure_ascii=False, indent=2)
     plot(f, m["thresholds"], m, od / "fusion_check.png")
+    screening_list(f).to_csv(od / "screening_list.csv", index=False, encoding="utf-8-sig")
     print(json.dumps({k: v for k, v in m.items() if k != "sar_annual"}, ensure_ascii=False, indent=2))
 
     if args.trace:
