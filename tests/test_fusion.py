@@ -79,3 +79,16 @@ def test_idle_rule_two_seasons():
     assert two[("A", 2021)] == "review"      # 第一季没看到 → 待复核
     assert two[("A", 2022)] == "absent"      # 连续第二季没看到 → 进名单
     assert two[("B", 2021)] == "review"      # 没有上一季数据 → 待复核
+
+
+def test_two_level_screening_list():
+    from rs_verify.fusion import LEVEL_NOTICE, LEVEL_REVOKE, screening_list
+    f = pd.DataFrame({"pid": ["A", "A", "A", "B", "C"], "year": [2020, 2021, 2022, 2021, 2021],
+                      "kind": ["farm", "farm", "farm", "shifted", "shifted"], "gap": [False, False, False, True, False],
+                      "open_sea": [False, False, False, False, True], "split": "test",
+                      "decision": ["absent", "absent", "present", "absent", "review"],
+                      "absent1": [True, True, False, True, False]})
+    lst = screening_list(f).set_index(["pid", "year"])
+    assert lst.loc[("A", 2020), "level"] == LEVEL_NOTICE       # 第一次没看到 → 整改通知
+    assert lst.loc[("A", 2021), "level"] == LEVEL_REVOKE       # 连续第二季 → 吊销核查
+    assert lst.loc[("B", 2021), "group"] == "gap" and len(lst) == 3
