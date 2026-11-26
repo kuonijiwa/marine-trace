@@ -159,6 +159,30 @@ python -m rs_verify.visual_sample --area ailun --project <PROJECT> --claim-geoms
 # d. 判读完后再跑 b，加 --visual-labels <判读表>，按目视真值评估
 ```
 
+### 7. 定位：已登记地块的年度"是否在养"筛查（不做测绘）
+
+位置和归属以政府登记（养殖证/海域使用权证上的界址坐标）为准，卫星不做测绘，只对已登记地块每年核查一次：
+今年还养不养、规模对不对得上。依据：新《渔业法》（2026-05-01 施行）第六十五条第二款，
+"无正当理由使水域、滩涂荒芜满一年的，责令限期开发利用；逾期未开发利用的，吊销养殖证"。
+卫星只出**筛查名单**（判"不在养"），交渔政现场核查，不直接处罚。
+
+三个新选项（fusion 和 tradeoff 都有）：
+- `--s2-agg median|persist`：光学多景合成。persist = 5 张好图的 25% 分位（多数图上都持续有的纹理），
+  压掉海浪、浑浊锋面这类偶发纹理。
+- `--idle-seasons 1|2`：荒芜认定。1 = 一季两证人都没看到筏即进名单；2 = 连续两季才进（冤枉更少，晚一年发现）。
+  tradeoff 默认两种都算（旋钮 C）。
+- `--idle-place gap|open_sea`：模拟空挂证放在哪。gap（默认）= 养殖区内或旁边的空地块（偏移 ≤ 1000 m、
+  与参考筏区不重叠），四周是别人的筏架，更接近现实；open_sea = 远处开阔海（对照）。
+
+```bash
+# 光学导出时地块向内收缩 50 m，防邻居筏架污染边缘纹理（输出 ailun_s2in50_<year>.csv）
+python -m rs_verify.gee_s2_activity --area ailun --geojson data/claims/ailun_claim_geoms.geojson \
+    --project <PROJECT> --by-year --inner-buffer 50
+# 取舍表：两种荒芜规则 × 门限网格，并按两轮目视真值统计真冤枉/真检出
+python -m rs_verify.tradeoff （annual 的参数） --s2 data/activity_s2/ailun_s2_*.csv --metric abs_excess \
+    --s2-agg persist --visual-labels data/visual/ailun_visual_round1.csv data/visual/ailun_visual_round2.csv
+```
+
 ### 诊断图
 
 ```bash
