@@ -46,6 +46,8 @@ def prepare_activity(
     a = a.dropna(subset=["metric"])
     a["coverage"] = a["n_pix"] * PIXEL_AREA_M2 / a["area_m2"]
     a = a[a["coverage"] >= min_coverage]
+    # 同一轨道相邻两景（同一天、前后衔接）的重叠带会让同一多边形同一天出现两行：只留覆盖最全的一行
+    a = a.sort_values("n_pix", ascending=False).drop_duplicates(["pid", "date"]).sort_values(["pid", "date"])
     a["active"] = a["metric"] >= active_threshold
     a["month"] = a["date"].dt.month
     return a
