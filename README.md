@@ -183,6 +183,23 @@ python -m rs_verify.tradeoff （annual 的参数） --s2 data/activity_s2/ailun_
     --s2-agg persist --visual-labels data/visual/ailun_visual_round1.csv data/visual/ailun_visual_round2.csv
 ```
 
+### 8. 默认配置、两级名单与论文图（v3 结果之后）
+
+v3 实测（目视真值 226 个：有筏 114、无筏 112）：
+- 光学多景持续性（`S2_AGG = "persist"`，现为默认）：真筏判"在养" 83% → 94%，冤枉率不变（0.9%）。
+- 地块内缩 50 m：真筏判在养降到 90%、空挂证检出 22% → 18%，**不采用**（邻居筏架污染不是误判主因）。
+- 一季规则 vs 连续两季：名单准确率 98% vs 100%，查出真空地块 52% vs 21%（均衡档）。
+
+`fusion` 现在另外输出 `screening_list.csv`，两级名单对应新《渔业法》第六十五条第二款：
+**整改通知**（本季两证人都没看到筏，"责令限期开发利用"）→ **吊销核查**（连续两季没看到，"逾期未开发利用的，吊销养殖证"的线索，交渔政现场核查）。
+
+```bash
+# 论文主图：取舍图（目视真值 + 模拟造假）和两级名单流程图
+python -m rs_verify.paper_figs --tradeoff-table outputs/v3_tradeoff_per/tradeoff_table.csv --outdir outputs/paper_figs
+```
+
+第二判读者盲判：`data/visual/blind2_key.csv` 是 50 张盲判图（B01–B50）与第二轮样本的对照（**不要给判读人看**）。
+
 ### 诊断图
 
 ```bash
