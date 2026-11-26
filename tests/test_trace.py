@@ -46,3 +46,12 @@ def test_layers_stop_the_right_scenarios():
     assert cases[cases["scenario"] == "honest"]["caught"].isna().all()
     launder3 = v[(v["scenario"] == "S4_launder") & (v["factor"] == 3.0)]
     assert (launder3.groupby("case")["layer"].apply(lambda s: (s == "quantity").any())).all()
+
+
+def test_tradeoff_table_columns():
+    import pandas as pd
+    from rs_verify.tradeoff import to_cn
+    df = pd.DataFrame([{"q_absent": 0.01, "p_quantity": 0.005, "honest_flagged": 0.01, "honest_review": 0.02,
+                        "S2_idle_flagged": 0.9, "S4_launder_x2_flagged": 0.5}])
+    cols = list(to_cn(df).columns)
+    assert "诚实户_被判可疑(冤枉率)" in cols and "有证不养_检出率" in cols and "洗货2倍_检出率" in cols
