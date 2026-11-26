@@ -14,7 +14,8 @@
 
 用法：
   python -m rs_verify.diagnose_activity --area ailun --claims data/claims/ailun_claims.csv \
-      --activity data/activity/ailun_activity_*.csv --copy-to G:/c_file
+      --activity data/activity/ailun_activity_*.csv --copy-to G:/c_file [--metric abs_excess]
+  （--metric 不是默认值时，输出文件名带后缀，如 activity_diagnosis_abs_excess.png）
 """
 from __future__ import annotations
 
@@ -32,6 +33,11 @@ import pandas as pd  # noqa: E402
 
 from . import config as C  # noqa: E402
 from .verify import prepare_activity  # noqa: E402
+
+
+YLABEL = {"excess": "Excess backscatter\n(lin_ratio − 1)",
+          "abs_excess": "Absolute excess\n(σ0 − sea, ×10⁻³)",
+          "bright_frac": "Bright-pixel fraction"}
 
 
 def groups(claims: pd.DataFrame) -> dict[str, set[str]]:
@@ -67,9 +73,9 @@ def run(area: str, claims_path: str, activity_paths: list[str], outdir: str | No
         lines.append(mo[0.5].rename(name))
     for ax in axes[:2]:
         ax.axhline(0, color="k", lw=0.6)
-        ax.set_ylabel("Excess backscatter\n(lin_ratio − 1)")
+        ax.set_ylabel(YLABEL[C.ACTIVITY_METRIC])
     axes[0].legend(fontsize=8)
-    axes[0].set_title(f"{area}: per-scene median")
+    axes[0].set_title(f"{area}: per-scene median ({C.ACTIVITY_METRIC})")
     axes[1].set_xticks(range(1, 13))
     axes[1].set_xlabel("Month")
     axes[1].set_title("Monthly median and IQR (all years)")
@@ -88,14 +94,15 @@ def run(area: str, claims_path: str, activity_paths: list[str], outdir: str | No
     axes[3].axhline(0, color="k", lw=0.6)
     axes[3].set_yscale("symlog", linthresh=1)
     axes[3].set_xlabel("Sea background (dB)")
-    axes[3].set_ylabel("Per-scene median excess")
+    axes[3].set_ylabel("Per-scene median\n" + YLABEL[C.ACTIVITY_METRIC])
     axes[3].legend(fontsize=8)
     axes[3].set_title("Metric vs sea state (left of red line: calm sea near noise floor, dropped)")
     fig.tight_layout()
 
     od = Path(outdir or Path(C.OUTPUT_DIR) / area)
     od.mkdir(parents=True, exist_ok=True)
-    png, txt = od / "activity_diagnosis.png", od / "activity_diagnosis.txt"
+    suf = "" if C.ACTIVITY_METRIC == "excess" else f"_{C.ACTIVITY_METRIC}"
+    png, txt = od / f"activity_diagnosis{suf}.png", od / f"activity_diagnosis{suf}.txt"
     fig.savefig(png, dpi=150)
     plt.close(fig)
 
@@ -107,7 +114,7 @@ def run(area: str, claims_path: str, activity_paths: list[str], outdir: str | No
                 f" < {C.MIN_BACKGROUND_DB} dB 被去掉）\n")
         for name, pids in g.items():
             f.write(f"{name}: {len(pids)} 个多边形\n")
-        f.write("\n按月份的中位数（lin_ratio − 1）：\n")
+        f.write(f"\n按月份的中位数（指标 {C.ACTIVITY_METRIC}）：\n")
         f.write(tab.to_string())
         f.write("\n")
     print(txt.read_text(encoding="utf-8"))
@@ -120,8 +127,12 @@ def main() -> None:
     ap.add_argument("--claims", required=True)
     ap.add_argument("--activity", required=True, nargs="+")
     ap.add_argument("--outdir", default=None)
+    ap.add_argument("--metric", default=None, choices=["excess", "abs_excess", "bright_frac"],
+                    help="活动指标（默认 config.ACTIVITY_METRIC）")
     ap.add_argument("--copy-to", default=None)
     args = ap.parse_args()
+    if args.metric:
+        C.ACTIVITY_METRIC = args.metric
     png, txt = run(args.area, args.claims, args.activity, args.outdir)
     if args.copy_to:
         dst = Path(args.copy_to)

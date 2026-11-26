@@ -105,3 +105,14 @@ def test_verify_with_excess_metric():
     assert r.loc["t", "confidence"] > 0.9
     assert r.loc["loc", "confidence"] < 0.1
     assert r.loc["time", "confidence"] < 0.1
+
+
+def test_abs_excess_metric():
+    import pandas as pd
+    from rs_verify.verify import activity_metric
+    df = pd.DataFrame({"lin_ratio": [1.5, 3.0], "bg_db": [-20.0, -30.0], "bright_frac": [0.1, 0.2]})
+    ex = activity_metric(df, "excess")
+    ab = activity_metric(df, "abs_excess")
+    assert abs(ex[0] - 0.5) < 1e-9 and abs(ex[1] - 2.0) < 1e-9
+    # 同样的绝对差：0.5×10⁻² = 5×10⁻³；2.0×10⁻³ = 2×10⁻³
+    assert abs(ab[0] - 5.0) < 1e-9 and abs(ab[1] - 2.0) < 1e-9

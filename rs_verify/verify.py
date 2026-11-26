@@ -20,16 +20,23 @@ from . import config as C
 PIXEL_AREA_M2 = 100.0  # 10 m × 10 m
 
 
-def activity_metric(act: pd.DataFrame, metric: str = C.ACTIVITY_METRIC) -> pd.Series:
-    """每景每个多边形的"活动指标"。
+def activity_metric(act: pd.DataFrame, metric: str | None = None) -> pd.Series:
+    """每景每个多边形的"活动指标"。metric 为 None 时用 config.ACTIVITY_METRIC（运行时读取，命令行可改）。
 
-    excess      = lin_ratio − 1：多边形平均雷达亮度比海面高出多少（线性）。空海面≈0；
-                  按混合模型，它与多边形里被浮筏覆盖的比例成正比。（默认，适合海带浮筏）
+    excess      = lin_ratio − 1：多边形平均雷达亮度比海面高出多少（相对值）。空海面≈0。
+                  缺点：浮筏回波大致固定，海面回波随风浪变，相对值在平静海面被放大、在大风天被压扁。
+    abs_excess  = (lin_ratio − 1) × 海面背景（线性）× 1000 = 多边形平均回波 − 海面回波（绝对值，×10⁻³）。
+                  混合模型：≈ 覆盖率 × (浮筏回波 − 海面回波)；海面回波远小于浮筏时基本不随风浪变。
     bright_frac = 多边形里"比背景亮 6 dB"的像元占比。（适合网箱等强回波结构）
     数据里没有 lin_ratio 列时（旧版导出），自动退回 bright_frac。
     """
-    if metric == "excess" and "lin_ratio" in act.columns:
-        return pd.to_numeric(act["lin_ratio"], errors="coerce") - 1.0
+    metric = metric or C.ACTIVITY_METRIC
+    if metric in ("excess", "abs_excess") and "lin_ratio" in act.columns:
+        ex = pd.to_numeric(act["lin_ratio"], errors="coerce") - 1.0
+        if metric == "excess":
+            return ex
+        bg_lin = 10 ** (pd.to_numeric(act["bg_db"], errors="coerce") / 10)
+        return ex * bg_lin * 1000
     return pd.to_numeric(act["bright_frac"], errors="coerce")
 
 

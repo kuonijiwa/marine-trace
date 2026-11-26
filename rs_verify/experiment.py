@@ -162,6 +162,7 @@ def run(area: str, claims_path: str, activity_paths: list[str], calibrate: bool,
     res = verify_claims(act, claims)
     m = evaluate(res)
     m["active_frac_threshold"] = thr
+    m["activity_metric"] = C.ACTIVITY_METRIC
 
     od = Path(outdir or Path(C.OUTPUT_DIR) / area)
     od.mkdir(parents=True, exist_ok=True)
@@ -179,7 +180,11 @@ def main() -> None:
     ap.add_argument("--activity", required=True, nargs="+", help="一个或多个活动 CSV（GEE 导出可能分多个文件）")
     ap.add_argument("--calibrate", action="store_true", help="用数据自动标定'有设施'阈值")
     ap.add_argument("--outdir", default=None)
+    ap.add_argument("--metric", default=None, choices=["excess", "abs_excess", "bright_frac"],
+                    help="活动指标（默认 config.ACTIVITY_METRIC）")
     args = ap.parse_args()
+    if args.metric:
+        C.ACTIVITY_METRIC = args.metric
     m = run(args.area, args.claims, args.activity, args.calibrate, args.outdir)
     print(json.dumps(m, ensure_ascii=False, indent=2))
 
