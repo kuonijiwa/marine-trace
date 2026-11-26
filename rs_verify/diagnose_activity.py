@@ -7,6 +7,8 @@
   activity_diagnosis.png   (a) 2019–2025 逐景曲线：养殖地块 vs 空海面（中位数）
                            (b) 按月份汇总（中位数 + 四分位范围）
                            (c) 每景的海面背景亮度（dB），看大风天的影响
+                           (d) 每景"养殖地块/空海面"的中位数 vs 背景亮度：看太平静或大风时指标是否失真
+  (a)(b) 已去掉背景低于 config.MIN_BACKGROUND_DB 的景；(c)(d) 显示全部景，虚线是这个门限。
   activity_diagnosis.txt   按月份的数字表
 加 --copy-to <文件夹> 可把这两个文件再复制一份过去。
 
@@ -44,11 +46,13 @@ def groups(claims: pd.DataFrame) -> dict[str, set[str]]:
 
 def run(area: str, claims_path: str, activity_paths: list[str], outdir: str | None = None) -> tuple[Path, Path]:
     files = sorted({f for p in activity_paths for f in (glob.glob(p) or [p])})
-    act = prepare_activity(pd.concat([pd.read_csv(p) for p in files], ignore_index=True))
+    raw = pd.concat([pd.read_csv(p) for p in files], ignore_index=True)
+    act_all = prepare_activity(raw, min_bg_db=None)
+    act = prepare_activity(raw)
     g = groups(pd.read_csv(claims_path))
     colors = {k: c for k, c in zip(g, ["tab:green", "tab:orange", "tab:blue"])}
 
-    fig, axes = plt.subplots(3, 1, figsize=(9, 10), gridspec_kw={"height_ratios": [1.2, 1, 0.7]})
+    fig, axes = plt.subplots(4, 1, figsize=(9, 13), gridspec_kw={"height_ratios": [1.2, 1, 0.7, 1]})
     lines = []
     for name, pids in g.items():
         a = act[act["pid"].isin(pids)]
@@ -69,10 +73,24 @@ def run(area: str, claims_path: str, activity_paths: list[str], outdir: str | No
     axes[1].set_xticks(range(1, 13))
     axes[1].set_xlabel("Month")
     axes[1].set_title("Monthly median and IQR (all years)")
-    bg = act.groupby("date")["bg_db"].first()
+    bg = act_all.groupby("date")["bg_db"].first()
     axes[2].plot(bg.index, bg.values, ".", ms=3, color="gray")
+    axes[2].axhline(C.MIN_BACKGROUND_DB, color="r", ls="--", lw=0.8)
     axes[2].set_ylabel("Sea background (dB)")
     axes[2].set_title("Per-scene sea-surface background (windy scenes are brighter)")
+    for name, pids in g.items():
+        a = act_all[act_all["pid"].isin(pids)]
+        if a.empty or name.startswith("Neighbouring"):
+            continue
+        per = a.groupby("date").agg(m=("metric", "median"), bg=("bg_db", "first"))
+        axes[3].scatter(per["bg"], per["m"], s=6, color=colors[name], label=name)
+    axes[3].axvline(C.MIN_BACKGROUND_DB, color="r", ls="--", lw=0.8)
+    axes[3].axhline(0, color="k", lw=0.6)
+    axes[3].set_yscale("symlog", linthresh=1)
+    axes[3].set_xlabel("Sea background (dB)")
+    axes[3].set_ylabel("Per-scene median excess")
+    axes[3].legend(fontsize=8)
+    axes[3].set_title("Metric vs sea state (left of red line: calm sea near noise floor, dropped)")
     fig.tight_layout()
 
     od = Path(outdir or Path(C.OUTPUT_DIR) / area)
@@ -85,7 +103,8 @@ def run(area: str, claims_path: str, activity_paths: list[str], outdir: str | No
     with open(txt, "w", encoding="utf-8") as f:
         f.write(f"文件：{', '.join(files)}\n")
         f.write(f"有效记录：{len(act)}，日期 {act['date'].min().date()} ~ {act['date'].max().date()}，"
-                f"景数 {act['date'].nunique()}\n")
+                f"景数 {act['date'].nunique()}（另有 {act_all['date'].nunique() - act['date'].nunique()} 景因海面背景"
+                f" < {C.MIN_BACKGROUND_DB} dB 被去掉）\n")
         for name, pids in g.items():
             f.write(f"{name}: {len(pids)} 个多边形\n")
         f.write("\n按月份的中位数（lin_ratio − 1）：\n")

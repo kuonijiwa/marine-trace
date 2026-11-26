@@ -37,9 +37,13 @@ def prepare_activity(
     act: pd.DataFrame,
     active_threshold: float = C.ACTIVE_FRAC_THRESHOLD,
     min_coverage: float = 0.8,
+    min_bg_db: float | None = C.MIN_BACKGROUND_DB,
 ) -> pd.DataFrame:
-    """清洗活动表：去掉多边形只被影像部分覆盖（或大半在陆地上）的景，标记"有设施"景。"""
+    """清洗活动表：去掉多边形只被影像部分覆盖（或大半在陆地上）的景、海面太平静（接近噪声底）的景，
+    标记"有设施"景。"""
     a = act.copy()
+    if min_bg_db is not None and "bg_db" in a.columns:
+        a = a[pd.to_numeric(a["bg_db"], errors="coerce") >= min_bg_db]
     a["pid"] = a["pid"].astype(str)
     a["date"] = pd.to_datetime(a["date"])
     a["metric"] = activity_metric(a)
