@@ -19,6 +19,8 @@
 评估：检验组地块上，按参考标签（养殖 / 空海面）统计三种结论的比例；
       如提供目视判读表（--visual-labels，列 pid, year, visual = yes/no/unclear），另按目视真值统计。
 可选 --trace：把融合结论接入完整流程模拟（登记 + 批次 + 三层核验）。
+可选 --s2-agg median|persist（光学多景合成）、--idle-seasons 1|2（荒芜认定季数）、
+     --idle-place gap|open_sea（模拟空挂证的位置，默认养殖区内空地块）。
 
 输出（outputs/<area>_fusion/）：
   fusion_metrics.json, fusion_composite.csv（每个多边形 × 年的两证人数值与结论）, fusion_check.png
@@ -74,18 +76,27 @@ def s2_good_scenes(s2_raw: pd.DataFrame, months: list[int] | None = None, min_cl
 
 
 def s2_annual(s2_raw: pd.DataFrame, years: list[int], k_best: int = C.S2_BEST_SCENES,
-              min_clear: float = C.S2_MIN_CLEAR, min_cov: float = 0.8, months: list[int] | None = None) -> pd.DataFrame:
+              min_clear: float = C.S2_MIN_CLEAR, min_cov: float = 0.8, months: list[int] | None = None,
+              agg: str | None = None) -> pd.DataFrame:
     a = s2_good_scenes(s2_raw, months, min_clear, min_cov)
     a = a[a["year"].isin(years)]
-    return _best_k(a, k_best)
+    return _best_k(a, k_best, agg)
 
 
-def _best_k(a: pd.DataFrame, k_best: int) -> pd.DataFrame:
+def _best_k(a: pd.DataFrame, k_best: int, agg: str | None = None) -> pd.DataFrame:
+    """每个多边形每年：雾霾最轻（b2 最低）的 K 张好图合成一个纹理值。
+    agg = median（中位数）或 persist（低分位：多数图上都持续有的纹理，压掉海浪/浑浊锋面这类偶发纹理）。"""
+    agg = agg or C.S2_AGG
     if a.empty:
         return pd.DataFrame(columns=["pid", "year", "tex_s2", "n_s2", "b2_s2"])
-    # 每个多边形每年：雾霾最轻（b2 最低）的 K 张
     a = a.sort_values("b2").groupby(["pid", "year"]).head(k_best)
-    return a.groupby(["pid", "year"]).agg(tex_s2=("tex", "median"), n_s2=("tex", "size"),
+    if agg == "median":
+        tex = ("tex", "median")
+    elif agg == "persist":
+        tex = ("tex", lambda x: float(np.quantile(x, C.S2_PERSIST_Q)))
+    else:
+        raise ValueError(f"未知的 S2 合成方式：{agg}")
+    return a.groupby(["pid", "year"]).agg(tex_s2=tex, n_s2=("tex", "size"),
                                           b2_s2=("b2", "median")).reset_index()
 
 
@@ -132,6 +143,26 @@ def decide(f: pd.DataFrame, th: dict) -> pd.DataFrame:
     return f
 
 
+def apply_idle_rule(f: pd.DataFrame, seasons: int | None = None) -> pd.DataFrame:
+    """荒芜认定规则：seasons = 1 时一季"两证人都没看到"即进筛查名单；
+    seasons = 2 时要求上一季（year − 1）也是"没看到"，否则降为"待复核"。"""
+    seasons = C.IDLE_SEASONS if seasons is None else int(seasons)
+    if seasons <= 1:
+        return f
+    if seasons != 2:
+        raise ValueError("荒芜规则只支持 1 或 2 季")
+    f = f.copy()
+    absent = set(zip(f.loc[f["decision"] == "absent", "pid"], f.loc[f["decision"] == "absent", "year"]))
+    prev_absent = np.array([(p, y - 1) in absent for p, y in zip(f["pid"], f["year"])])
+    demote = (f["decision"] == "absent").to_numpy() & ~prev_absent
+    f.loc[demote, "decision"] = "review"
+    f.loc[demote, "present"] = np.nan
+    f.loc[demote, "status"] = "review"
+    f.loc[demote, "evidence"] = "仅本季未见筏（上季见筏或无数据），待复核"
+    f.attrs["idle_seasons"] = seasons
+    return f
+
+
 def rates(d: pd.DataFrame) -> dict:
     n = len(d)
     if n == 0:
@@ -145,6 +176,7 @@ def evaluate(f: pd.DataFrame, visual: pd.DataFrame | None = None) -> dict:
     m = {
         "test_farm": rates(te[te["kind"] == "farm"]),
         "test_open_sea": rates(te[te["open_sea"]]),
+        "test_gap": rates(te[te["gap"]]) if "gap" in te else {"n": 0},
         "test_shift_clean_absent_rate": {int(d): float((g["decision"] == "absent").mean())
                                          for d, g in sh[sh["overlap_ref"] < 0.1].groupby("shift_m")},
         "test_shift_clean_not_passed": {int(d): float((g["decision"] != "present").mean())
@@ -167,6 +199,14 @@ def evaluate(f: pd.DataFrame, visual: pd.DataFrame | None = None) -> dict:
                        "by_decision": {k: {"n": int(len(g)), "raft_yes_share": float((g["visual"] == "yes").mean())}
                                        for k, g in v.groupby("decision")},
                        "absent_but_raft_visible": int(((v["decision"] == "absent") & (v["visual"] == "yes")).sum()),
+                       # 筛查名单（判"不在养"）：图上确有筏 = 冤枉；图上没筏 = 查对了
+                       "list": {"n_listed": int((v["decision"] == "absent").sum()),
+                                "listed_truly_empty": float((v.loc[v["decision"] == "absent", "visual"] == "no").mean())
+                                if (v["decision"] == "absent").any() else float("nan"),
+                                "farmed_listed": float((v.loc[v["visual"] == "yes", "decision"] == "absent").mean())
+                                if (v["visual"] == "yes").any() else float("nan"),
+                                "empty_listed": float((v.loc[v["visual"] == "no", "decision"] == "absent").mean())
+                                if (v["visual"] == "no").any() else float("nan")},
                        "raft_yes": rates(v[v["visual"] == "yes"]),
                        "raft_no": rates(v[v["visual"] == "no"])}
         th = f.attrs["th"]
@@ -193,7 +233,7 @@ def plot(f: pd.DataFrame, th: dict, m: dict, out: Path) -> None:
     axes[0].legend(fontsize=8)
     cats = ["present", "review", "insufficient", "absent"]
     colors = {"present": "#dddddd", "review": "khaki", "insufficient": "tab:gray", "absent": "tab:red"}
-    groups = {"Farm": m["test_farm"], "Open sea": m["test_open_sea"]}
+    groups = {"Farm": m["test_farm"], "Gap in zone": m.get("test_gap", {"n": 0}), "Open sea": m["test_open_sea"]}
     if "visual" in m:
         groups.update({"Visual: raft": m["visual"]["raft_yes"], "Visual: none": m["visual"]["raft_no"]})
     bottom = np.zeros(len(groups))
@@ -209,18 +249,20 @@ def plot(f: pd.DataFrame, th: dict, m: dict, out: Path) -> None:
     plt.close(fig)
 
 
-def build(claims, act_raw, cover, s2_raw, visual=None):
+def build(claims, act_raw, cover, s2_raw, visual=None, s2_agg=None, idle_seasons=None):
     am, sep, comp = annual.run(claims, act_raw, cover, window=FULL_YEAR)
-    s2 = s2_annual(s2_raw, am["years"])
+    s2 = s2_annual(s2_raw, am["years"], agg=s2_agg)
     f = comp.rename(columns={"m": "m_sar", "n": "n_sar"})
     f["m_sar"] = np.where(f["status"] == "ok", f["m_sar"], np.nan)
     f = f.drop(columns=["present", "status"]).merge(s2, on=["pid", "year"], how="left")
     # 没有雷达行、只有光学的多边形-年（少见）也补进来
     th = calibrate(f)
-    f = decide(f, th)
+    f = apply_idle_rule(decide(f, th), idle_seasons)
     f.attrs["th"] = th
     m = evaluate(f, visual)
-    m = {"thresholds": th, "sar_annual": am, **m}
+    m = {"thresholds": th, "s2_agg": s2_agg or C.S2_AGG,
+         "idle_seasons": C.IDLE_SEASONS if idle_seasons is None else int(idle_seasons),
+         "idle_placement": C.IDLE_PLACEMENT, "sar_annual": am, **m}
     return f, m, am
 
 
@@ -243,15 +285,20 @@ def main() -> None:
     ap.add_argument("--visual-labels", default=None, nargs="+",
                     help="目视判读表（pid, year, visual=yes/no/unclear），可给多轮，同一 pid-year 以后一轮为准")
     ap.add_argument("--trace", action="store_true", help="接入完整流程模拟")
+    ap.add_argument("--s2-agg", default=None, choices=["median", "persist"], help="光学多景合成方式")
+    ap.add_argument("--idle-seasons", type=int, default=None, choices=[1, 2], help="荒芜认定：1 季或连续 2 季")
+    ap.add_argument("--idle-place", default=None, choices=["gap", "open_sea"], help="模拟空挂证放在哪")
     ap.add_argument("--outdir", default=None)
     args = ap.parse_args()
     if args.metric:
         C.ACTIVITY_METRIC = args.metric
+    if args.idle_place:
+        C.IDLE_PLACEMENT = args.idle_place
     claims, act_raw, cover = annual.load_inputs(args)
     files = sorted({f for p in args.s2 for f in (glob.glob(p) or [p])})
     s2_raw = pd.concat([pd.read_csv(p) for p in files], ignore_index=True)
     visual = load_visual(args.visual_labels) if args.visual_labels else None
-    f, m, am = build(claims, act_raw, cover, s2_raw, visual)
+    f, m, am = build(claims, act_raw, cover, s2_raw, visual, args.s2_agg, args.idle_seasons)
 
     od = Path(args.outdir or Path(C.OUTPUT_DIR) / f"{args.area}_fusion")
     od.mkdir(parents=True, exist_ok=True)
