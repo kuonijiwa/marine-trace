@@ -158,6 +158,7 @@ def evaluate(f: pd.DataFrame, visual: pd.DataFrame | None = None) -> dict:
     if visual is not None and len(visual):
         v = visual.copy()
         v["pid"] = v["pid"].astype(str)
+        v = v.drop(columns=[c for c in ("decision", "m_sar", "tex_s2") if c in v.columns])  # 以本次判定为准
         v = v.merge(f[["pid", "year", "decision", "m_sar", "tex_s2"]], on=["pid", "year"], how="inner")
         if "date" in v.columns:  # 只用海带季图片上的判读（夏秋图上筏架看不见，"no" 不可信）
             v = v[pd.to_datetime(v["date"]).dt.month.isin(C.S2_MONTHS)]
@@ -165,6 +166,7 @@ def evaluate(f: pd.DataFrame, visual: pd.DataFrame | None = None) -> dict:
         m["visual"] = {"n_labelled": int(len(v)),
                        "by_decision": {k: {"n": int(len(g)), "raft_yes_share": float((g["visual"] == "yes").mean())}
                                        for k, g in v.groupby("decision")},
+                       "absent_but_raft_visible": int(((v["decision"] == "absent") & (v["visual"] == "yes")).sum()),
                        "raft_yes": rates(v[v["visual"] == "yes"]),
                        "raft_no": rates(v[v["visual"] == "no"])}
         th = f.attrs["th"]
@@ -222,11 +224,24 @@ def build(claims, act_raw, cover, s2_raw, visual=None):
     return f, m, am
 
 
+def load_visual(paths) -> pd.DataFrame:
+    """读入多轮目视判读表并合并；同一 pid-year 重复时保留后一轮。"""
+    vs = []
+    for i, p in enumerate(paths):
+        v = pd.read_csv(p)
+        v["round"] = i + 1
+        vs.append(v)
+    v = pd.concat(vs, ignore_index=True)
+    v["pid"] = v["pid"].astype(str)
+    return v.drop_duplicates(["pid", "year"], keep="last").reset_index(drop=True)
+
+
 def main() -> None:
     ap = argparse.ArgumentParser(description="雷达 + 光学融合判定（精度优先）")
     annual.add_common_args(ap)
     ap.add_argument("--s2", required=True, nargs="+", help="gee_s2_activity 导出的 CSV（可用 *）")
-    ap.add_argument("--visual-labels", default=None, help="目视判读表（pid, year, visual=yes/no/unclear）")
+    ap.add_argument("--visual-labels", default=None, nargs="+",
+                    help="目视判读表（pid, year, visual=yes/no/unclear），可给多轮，同一 pid-year 以后一轮为准")
     ap.add_argument("--trace", action="store_true", help="接入完整流程模拟")
     ap.add_argument("--outdir", default=None)
     args = ap.parse_args()
@@ -235,7 +250,7 @@ def main() -> None:
     claims, act_raw, cover = annual.load_inputs(args)
     files = sorted({f for p in args.s2 for f in (glob.glob(p) or [p])})
     s2_raw = pd.concat([pd.read_csv(p) for p in files], ignore_index=True)
-    visual = pd.read_csv(args.visual_labels) if args.visual_labels else None
+    visual = load_visual(args.visual_labels) if args.visual_labels else None
     f, m, am = build(claims, act_raw, cover, s2_raw, visual)
 
     od = Path(args.outdir or Path(C.OUTPUT_DIR) / f"{args.area}_fusion")

@@ -41,3 +41,13 @@ def test_s2_only_kelp_season():
             for d, t in [("2021-08-10", 0.01), ("2021-09-10", 0.01), ("2020-12-20", 0.12), ("2021-03-01", 0.12)]]
     s2 = s2_annual(pd.DataFrame(rows), [2021], k_best=5).set_index("pid")
     assert s2.loc["F", "n_s2"] == 2 and abs(s2.loc["F", "tex_s2"] - 0.12) < 1e-9  # 夏秋图不用；12 月算到 2021 季
+
+
+def test_load_visual_merges_rounds(tmp_path):
+    import pandas as pd
+    from rs_verify.fusion import load_visual
+    a = tmp_path / "r1.csv"; b = tmp_path / "r2.csv"
+    pd.DataFrame({"pid": ["P1", "P2"], "year": [2020, 2020], "visual": ["yes", "no"]}).to_csv(a, index=False)
+    pd.DataFrame({"pid": ["P2", "P3"], "year": [2020, 2021], "visual": ["yes", "no"]}).to_csv(b, index=False)
+    v = load_visual([a, b]).set_index("pid")
+    assert len(v) == 3 and v.loc["P2", "visual"] == "yes"
