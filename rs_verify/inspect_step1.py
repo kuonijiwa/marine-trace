@@ -110,8 +110,10 @@ def plot_polygons(rows: list[dict], bbox: list[float], out: Path, title: str) ->
     plt.close(fig)
 
 
-def gee_overlay(area: str, project: str, source: str, threshold: float, out: Path) -> str:
-    """真彩色 + 检测结果（红色）的预览图；S2 时顺便返回海面纹理分位数，帮助选阈值。"""
+def gee_overlay(area: str, project: str, source: str, threshold: float, out: Path,
+                geojson: dict | None = None) -> str:
+    """真彩色 + 检测结果（红色）的预览图；S2 时顺便返回海面纹理分位数，帮助选阈值。
+    source='file' 时直接把 GeoJSON 里的多边形画上去（例如已发表数据集裁剪出来的参考边界）。"""
     import ee
 
     from . import gee_common as G
@@ -122,7 +124,10 @@ def gee_overlay(area: str, project: str, source: str, threshold: float, out: Pat
     comp = G.s2_composite(region, C.S2_REF_START, C.S2_REF_END)
     rgb = comp.select(["B4", "B3", "B2"]).visualize(min=0, max=3000)
     note = ""
-    if source == "s2":
+    if source == "file":
+        fc = ee.FeatureCollection([ee.Feature(ee.Geometry(f["geometry"])) for f in geojson["features"]])
+        det = ee.Image().byte().paint(fc, 1).selfMask()
+    elif source == "s2":
         tex = ee.Image(s2_asset_id(project, area))
         det = G.raft_mask_from_texture(tex, threshold)
         pct = tex.reduceRegion(ee.Reducer.percentile([10, 25, 50, 75, 90, 95, 99]), region, 60,
@@ -143,7 +148,8 @@ def gee_overlay(area: str, project: str, source: str, threshold: float, out: Pat
 def main() -> None:
     ap = argparse.ArgumentParser(description="检查第1步结果")
     ap.add_argument("--area", required=True, choices=list(C.STUDY_AREAS))
-    ap.add_argument("--source", choices=["s2", "s1"], default="s2", help="参考边界来源")
+    ap.add_argument("--source", choices=["s2", "s1", "file"], default="s2",
+                    help="参考边界来源；file = 直接画 GeoJSON 里的多边形（如已发表数据集）")
     ap.add_argument("--geojson", required=True, help="参考边界 GeoJSON 的路径")
     ap.add_argument("--threshold", type=float, default=C.S2_TEXTURE_THRESHOLD, help="S2 纹理阈值（和 s2vectors 用的一致）")
     ap.add_argument("--project", default=None, help="GEE 项目 ID（画叠加图用）")
@@ -159,7 +165,8 @@ def main() -> None:
     prefix = f"step1_{args.source}"
 
     bbox = C.STUDY_AREAS[args.area]["bbox"]
-    text, rows = summarize(geo.load_geojson(gj), bbox)
+    fc_in = geo.load_geojson(gj)
+    text, rows = summarize(fc_in, bbox)
     outs = [od / f"{prefix}_polygons.png"]
     plot_polygons(rows, bbox, outs[0], f"{args.area} ({args.source}): detected structures")
 
@@ -167,7 +174,7 @@ def main() -> None:
         if not args.project:
             raise SystemExit("画卫星叠加图需要 --project <项目ID>（或加 --no-gee 跳过）")
         outs.append(od / f"{prefix}_overlay.png")
-        note = gee_overlay(args.area, args.project, args.source, args.threshold, outs[-1])
+        note = gee_overlay(args.area, args.project, args.source, args.threshold, outs[-1], geojson=fc_in)
         if note:
             text += "\n" + note
     if args.source == "s2":
