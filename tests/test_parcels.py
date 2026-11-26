@@ -52,3 +52,29 @@ def test_claims_with_raft_mask():
     for f in geoms["features"]:
         cx, cy = geo.centroid(f["geometry"]["coordinates"][0])
         assert BBOX[0] <= cx <= BBOX[2] and BBOX[1] <= cy <= BBOX[3]
+
+
+def test_quantity_check_flags_inflation():
+    import numpy as np
+    import pandas as pd
+    from rs_verify.quantity import run as qrun
+
+    rows, claims = [], []
+    dates = pd.date_range("2020-11-01", "2021-05-31", freq="12D")
+    rng = np.random.default_rng(0)
+    cover = {}
+    for i in range(40):
+        pid = f"R{i:04d}"
+        cover[pid] = rng.uniform(0.6, 1.0)
+        for d in dates:
+            rows.append({"pid": pid, "date": d, "lin_ratio": 1 + 0.8 * cover[pid] * rng.uniform(0.9, 1.1),
+                         "bg_db": -20.0, "n_pix": 2500, "area_m2": 250000})
+        q = rng.uniform(0.5, 0.95)
+        base = dict(pid=pid, ref_pid=pid, start="2020-11-01", end="2021-05-31", overlap_ref=1.0)
+        claims.append(dict(base, claim_id=f"T{i}", label="true", quantity_rel=q, inflation=1.0))
+        claims.append(dict(base, claim_id=f"Q{i}", label="fake_quantity", quantity_rel=q * 2, inflation=2.0))
+    act = __import__("rs_verify.verify", fromlist=["prepare_activity"]).prepare_activity(pd.DataFrame(rows))
+    cl, m = qrun(pd.DataFrame(claims), act, cover)
+    assert m["test_false_alarm_true"] <= 0.2
+    assert m["test_detection_by_inflation"][2.0] >= 0.9
+    assert m["test_cover_sat_vs_ref_pearson_r"] > 0.8

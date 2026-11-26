@@ -109,6 +109,28 @@ python -m rs_verify.experiment --area ailun \
 
 结果在 `outputs/ailun/`。（`*` 通配符由脚本自己展开，Windows 下也能用。）
 
+可选参数：`--metric abs_excess`（不受风浪影响的绝对指标）；`--spatial-weight 1`（只看空间分，
+全年挂养的筏区没有淡季，季节规律不可用）。
+
+### 4. 产量核验（拦"基地里有地、再把外面的货洗进来"）
+
+```bash
+python -m rs_verify.quantity --area ailun --claims data/claims/ailun_claims.csv \
+    --claim-geoms data/claims/ailun_claim_geoms.geojson \
+    --raft-reference data/reference/ailun_fu2021_reference.geojson \
+    --activity data/activity/ailun_activity_*.csv --metric abs_excess
+```
+
+卫星估计每块地的养殖覆盖率（一半地块标定、另一半检验），声明量超过"覆盖率 × 产能"的容差就报警。
+结果在 `outputs/ailun_quantity/`。
+
+### 诊断图
+
+```bash
+python -m rs_verify.diagnose_activity --area ailun --claims data/claims/ailun_claims.csv \
+    --activity data/activity/ailun_activity_*.csv [--metric abs_excess]
+```
+
 ### 不连 GEE 先试跑（合成数据）
 
 ```bash

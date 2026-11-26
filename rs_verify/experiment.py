@@ -151,7 +151,8 @@ def plot_all(res: pd.DataFrame, m: dict, outdir: Path) -> None:
         plt.close(fig)
 
 
-def run(area: str, claims_path: str, activity_paths: list[str], calibrate: bool, outdir: str | None = None) -> dict:
+def run(area: str, claims_path: str, activity_paths: list[str], calibrate: bool, outdir: str | None = None,
+        spatial_weight: float = C.SPATIAL_WEIGHT) -> dict:
     claims = pd.read_csv(claims_path)
     # 自己展开通配符（Windows 的 cmd 不会替你展开 *）
     files = sorted({f for p in activity_paths for f in (glob.glob(p) or [p])})
@@ -159,8 +160,9 @@ def run(area: str, claims_path: str, activity_paths: list[str], calibrate: bool,
     act_raw = pd.concat([pd.read_csv(p) for p in files], ignore_index=True)
     thr = calibrate_active_threshold(act_raw, claims) if calibrate else C.ACTIVE_FRAC_THRESHOLD
     act = prepare_activity(act_raw, active_threshold=thr)
-    res = verify_claims(act, claims)
+    res = verify_claims(act, claims, spatial_weight=spatial_weight)
     m = evaluate(res)
+    m["spatial_weight"] = spatial_weight
     m["active_frac_threshold"] = thr
     m["activity_metric"] = C.ACTIVITY_METRIC
 
@@ -182,10 +184,12 @@ def main() -> None:
     ap.add_argument("--outdir", default=None)
     ap.add_argument("--metric", default=None, choices=["excess", "abs_excess", "bright_frac"],
                     help="活动指标（默认 config.ACTIVITY_METRIC）")
+    ap.add_argument("--spatial-weight", type=float, default=C.SPATIAL_WEIGHT,
+                    help="可信度里空间分的权重 w（1 = 只看空间分，不用季节规律；全年挂养的筏区用 1）")
     args = ap.parse_args()
     if args.metric:
         C.ACTIVITY_METRIC = args.metric
-    m = run(args.area, args.claims, args.activity, args.calibrate, args.outdir)
+    m = run(args.area, args.claims, args.activity, args.calibrate, args.outdir, args.spatial_weight)
     print(json.dumps(m, ensure_ascii=False, indent=2))
 
 
