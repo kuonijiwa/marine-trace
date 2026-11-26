@@ -14,6 +14,7 @@
 from __future__ import annotations
 
 import argparse
+import glob
 import json
 from pathlib import Path
 
@@ -152,7 +153,10 @@ def plot_all(res: pd.DataFrame, m: dict, outdir: Path) -> None:
 
 def run(area: str, claims_path: str, activity_paths: list[str], calibrate: bool, outdir: str | None = None) -> dict:
     claims = pd.read_csv(claims_path)
-    act_raw = pd.concat([pd.read_csv(p) for p in activity_paths], ignore_index=True)
+    # 自己展开通配符（Windows 的 cmd 不会替你展开 *）
+    files = sorted({f for p in activity_paths for f in (glob.glob(p) or [p])})
+    print("活动数据文件：", ", ".join(files))
+    act_raw = pd.concat([pd.read_csv(p) for p in files], ignore_index=True)
     thr = calibrate_active_threshold(act_raw, claims) if calibrate else C.ACTIVE_FRAC_THRESHOLD
     act = prepare_activity(act_raw, active_threshold=thr)
     res = verify_claims(act, claims)

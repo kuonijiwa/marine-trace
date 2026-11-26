@@ -51,7 +51,21 @@ earthengine authenticate          # 第一次需要登录 Google 账号
 
 ### 1. 参考边界
 
-参考边界用 **Sentinel-2 光学**提取（海带浮筏在光学图上清晰可见；参考来自光学、核验用雷达，两个独立传感器）。
+**推荐：直接用已发表的全国海水养殖区数据集**（Fu et al., 2021, ESSD, 16 m, GF-1 2016–2019；
+https://zenodo.org/records/3881612 ，CC BY 4.0）。浮筏识别不是本项目的创新点，用独立团队发表的数据作参考，
+避免"自己考自己"。荣成试跑：与 2025 年 S2 真彩色图吻合很好，研究区内约 208 km²。
+
+```bash
+# 1a. 从全国 kmz 裁出研究区（kmz 先改名为 fu2021.kmz）
+python -m rs_verify.import_reference_kmz --area ailun --kmz <路径>/fu2021.kmz
+# 1b. 叠加到 S2 真彩色图上检查
+python -m rs_verify.inspect_step1 --area ailun --source file \
+    --geojson data/reference/ailun_fu2021_reference.geojson --project <PROJECT>
+# 1c. 切成 500 m 网格地块（覆盖率 ≥ 60%）——声明的基本单位
+python -m rs_verify.make_parcels --area ailun --reference data/reference/ailun_fu2021_reference.geojson
+```
+
+**备选：自己用 Sentinel-2 光学**提取（海带浮筏在光学图上清晰可见；参考来自光学、核验用雷达，两个独立传感器）。
 分两个阶段（重计算先存成 GEE 资产，避免超时）：
 
 ```bash
@@ -75,22 +89,25 @@ python -m rs_verify.inspect_step1 --area ailun --source s2 --geojson <GeoJSON路
 ### 2. 生成声明 + 活动曲线
 
 ```bash
-python -m rs_verify.claims --area ailun --reference data/reference/ailun_reference.geojson
+# 抽 100 个地块出声明；假围栏是否压到别人的养殖区，用全部参考养殖区判断
+python -m rs_verify.claims --area ailun --reference data/reference/ailun_parcels.geojson \
+    --max-refs 100 --raft-reference data/reference/ailun_fu2021_reference.geojson
+# 只用一条相对轨道（自动选），每年一个导出任务
 python -m rs_verify.gee_step2_activity --area ailun \
-    --geojson data/claims/ailun_claim_geoms.geojson --project <PROJECT>
+    --geojson data/claims/ailun_claim_geoms.geojson --project <PROJECT> --by-year
 ```
 
-把导出的 `ailun_activity.csv` 放到 `data/activity/`。
+把导出的 `ailun_activity_<年份>.csv` 都放到 `data/activity/`。
 
 ### 3. 造假实验
 
 ```bash
 python -m rs_verify.experiment --area ailun \
     --claims data/claims/ailun_claims.csv \
-    --activity data/activity/ailun_activity.csv --calibrate
+    --activity data/activity/ailun_activity_*.csv --calibrate
 ```
 
-结果在 `outputs/ailun/`。
+结果在 `outputs/ailun/`。（`*` 通配符由脚本自己展开，Windows 下也能用。）
 
 ### 不连 GEE 先试跑（合成数据）
 

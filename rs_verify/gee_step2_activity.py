@@ -22,7 +22,7 @@ import ee
 
 from . import config as C
 from . import gee_common as G
-from .geo import load_geojson
+from . import geo
 
 SELECTORS = ["pid", "date", "lin_ratio", "bright_frac", "bg_db", "n_pix", "orbit_pass", "rel_orbit", "platform",
              "water_frac", "area_m2"]
@@ -42,10 +42,27 @@ def add_water_fraction(fc: ee.FeatureCollection) -> ee.FeatureCollection:
     return out.map(lambda f: f.set("water_frac", f.get("mean")))
 
 
-def activity_table(fc: ee.FeatureCollection, start: str, end: str) -> ee.FeatureCollection:
-    # 背景统计范围：所有多边形外包框再往外扩 2 km，保证里面有足够的空海面
-    region = fc.geometry().bounds().buffer(2000).bounds()
-    col = G.s1_collection(region, start, end).map(G.make_bright_fn(region))
+def stats_region(gj: dict, pad_m: float = 2000.0) -> ee.Geometry:
+    """背景统计范围：所有多边形外包框再往外扩 2 km，保证里面有足够的空海面。
+    在本地算外包框（几千个多边形在 GEE 上求并集很慢）。"""
+    bounds = [geo.geometry_bounds(f["geometry"]) for f in gj["features"]]
+    w, s = min(b[0] for b in bounds), min(b[1] for b in bounds)
+    e, n = max(b[2] for b in bounds), max(b[3] for b in bounds)
+    dlon, dlat = geo._deg_per_m((s + n) / 2)
+    return ee.Geometry.Rectangle([w - pad_m * dlon, s - pad_m * dlat, e + pad_m * dlon, n + pad_m * dlat],
+                                 proj="EPSG:4326", geodesic=False)
+
+
+def pick_orbit(region: ee.Geometry, start: str, end: str) -> tuple[int, dict]:
+    """覆盖研究区次数最多的相对轨道。"""
+    hist = G.s1_collection(region, start, end).aggregate_histogram("relativeOrbitNumber_start").getInfo()
+    best = max(hist, key=lambda k: hist[k])
+    return int(float(best)), hist
+
+
+def activity_table(fc: ee.FeatureCollection, start: str, end: str, region: ee.Geometry,
+                   rel_orbit: int | None = None) -> ee.FeatureCollection:
+    col = G.s1_collection(region, start, end, rel_orbit).map(G.make_bright_fn(region))
     reducer = ee.Reducer.mean().combine(ee.Reducer.count(), sharedInputs=True)
 
     def per_image(img):
@@ -84,22 +101,43 @@ def main() -> None:
     ap.add_argument("--start", default=C.START_DATE)
     ap.add_argument("--end", default=C.END_DATE)
     ap.add_argument("--tag", default="activity", help="导出文件名后缀")
+    ap.add_argument("--rel-orbit", default="auto",
+                    help="只用一条相对轨道：auto = 自动选覆盖最多的那条；all = 不限；或填轨道号")
+    ap.add_argument("--by-year", action="store_true", help="每年提交一个导出任务（数据量大时避免超时）")
     args = ap.parse_args()
 
     G.init(args.project)
-    fc = add_water_fraction(to_ee_fc(load_geojson(args.geojson)))
+    gj = geo.load_geojson(args.geojson)
+    fc = add_water_fraction(to_ee_fc(gj))
+    region = stats_region(gj)
     print("多边形数：", fc.size().getInfo())
 
-    task = ee.batch.Export.table.toDrive(
-        collection=activity_table(fc, args.start, args.end),
-        description=f"{args.area}_{args.tag}",
-        folder=args.drive_folder,
-        fileFormat="CSV",
-        selectors=SELECTORS,
-    )
-    task.start()
-    print("已提交导出任务：", task.id)
-    print("完成后把 CSV 放到 data/activity/ 下，再运行 experiment.py。")
+    if args.rel_orbit == "all":
+        orbit = None
+    elif args.rel_orbit == "auto":
+        orbit, hist = pick_orbit(region, args.start, args.end)
+        print("各相对轨道的影像数：", {int(float(k)): v for k, v in hist.items()}, "→ 选用", orbit)
+    else:
+        orbit = int(args.rel_orbit)
+
+    if args.by_year:
+        y0, y1 = int(args.start[:4]), int(args.end[:4])
+        periods = [(f"{y}-01-01", f"{y + 1}-01-01", f"_{y}") for y in range(y0, y1 + 1)]
+    else:
+        periods = [(args.start, args.end, "")]
+
+    for start, end, suffix in periods:
+        n = G.s1_collection(region, start, end, orbit).size().getInfo()
+        task = ee.batch.Export.table.toDrive(
+            collection=activity_table(fc, start, end, region, orbit),
+            description=f"{args.area}_{args.tag}{suffix}",
+            folder=args.drive_folder,
+            fileFormat="CSV",
+            selectors=SELECTORS,
+        )
+        task.start()
+        print(f"已提交导出任务 {args.area}_{args.tag}{suffix}（{start} ~ {end}，{n} 景）：", task.id)
+    print("完成后把 CSV 放到 data/activity/ 下，再运行 experiment.py（可一次给多个 CSV）。")
 
 
 if __name__ == "__main__":

@@ -32,16 +32,21 @@ def region_from_bbox(bbox) -> ee.Geometry:
     return ee.Geometry.Rectangle([w, s, e, n], proj="EPSG:4326", geodesic=False)
 
 
-def s1_collection(region: ee.Geometry, start: str, end: str) -> ee.ImageCollection:
-    """IW 模式、含 VV 极化的 Sentinel-1 GRD（GEE 里已是 dB 值）。"""
-    return (
+def s1_collection(region: ee.Geometry, start: str, end: str, rel_orbit: int | None = None) -> ee.ImageCollection:
+    """IW 模式、含 VV 极化的 Sentinel-1 GRD（GEE 里已是 dB 值）。
+
+    rel_orbit：只用某一条相对轨道（每次从同一个角度看同一片海，亮度可比性最好）。
+    """
+    col = (
         ee.ImageCollection(C.S1_COLLECTION)
         .filterBounds(region)
         .filterDate(start, end)
         .filter(ee.Filter.eq("instrumentMode", "IW"))
         .filter(ee.Filter.listContains("transmitterReceiverPolarisation", C.S1_POLARIZATION))
-        .select(C.S1_POLARIZATION)
     )
+    if rel_orbit is not None:
+        col = col.filter(ee.Filter.eq("relativeOrbitNumber_start", int(rel_orbit)))
+    return col.select(C.S1_POLARIZATION)
 
 
 def water_mask(shore_buffer_m: float = C.SHORE_BUFFER_M) -> ee.Image:
