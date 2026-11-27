@@ -214,6 +214,20 @@ python -m rs_verify.case_study --composite outputs/v4_fusion/fusion_composite.cs
     --thumbs --claim-geoms data/claims/ailun_claim_geoms.geojson --project <PROJECT> --outdir outputs/case_study
 ```
 
+### 10. 真实登记地块：大连金普新区养殖证 / 海域使用权公示
+
+金普新区政府网站公开了养殖证和海域使用权申请公示（含逐点界址坐标、面积、养殖方式、街道、海域管理号、
+设立/续期/变更/转让）。Codex 下载原文并提取文字到 `data/registry/dalian_jinpu/raw/`（含 index.csv），
+再解析成登记多边形：
+
+```bash
+python -m rs_verify.registry_parse --raw data/registry/dalian_jinpu/raw --out data/registry/dalian_jinpu/registry
+```
+
+按界址点切分每一宗（PDF 版式里单元格和坐标行交错），用"坐标算出的面积 ≈ 公示面积（±5%）"自检；
+同一组界址点多次公示只保留一块；滩涂底播 / 纯海底的标为卫星不可见（`raft_visible=False`）。
+不提取申请人姓名，地块用匿名编号 DL00001…。扫描件 PDF（没有文字层）暂不处理。
+
 ### 诊断图
 
 ```bash
