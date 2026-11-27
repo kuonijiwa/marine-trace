@@ -87,3 +87,37 @@ def test_paper_figs_from_tradeoff_table(tmp_path):
     paper_figs.fig_tradeoff(paper_figs.load_table(path), tmp_path / "fig_tradeoff")
     paper_figs.fig_workflow(tmp_path / "fig_workflow")
     assert (tmp_path / "fig_tradeoff.png").exists() and (tmp_path / "fig_workflow.pdf").exists()
+
+
+def test_uncertainty_and_case_study(tmp_path):
+    from rs_verify import case_study, trace_sim, uncertainty
+    claims, act, cover, s2, gj = _world(seed=1)
+    old = C.ACTIVITY_METRIC
+    C.ACTIVITY_METRIC = "abs_excess"
+    try:
+        visual = pd.DataFrame({"pid": ["R0000", "R0001", "R0000_S500_B090", "R0001_S5000_B090"],
+                               "year": [2021, 2022, 2021, 2022], "date": ["2021-01-10"] * 2 + ["2022-01-10"] * 2,
+                               "visual": ["yes", "yes", "no", "no"]})
+        f, m, am = fusion.build(claims, act, cover, s2, visual, s2_agg="persist", idle_seasons=1)
+        path = tmp_path / "comp.csv"
+        f.to_csv(path, index=False)
+        comp = pd.read_csv(path)
+        _, _, _, batches = trace_sim.run_with_comp(f, am, claims, cover, gj, "ailun")
+        t = uncertainty.run(comp, visual, m["thresholds"], batches, n=200)
+        row = t.set_index("metric")
+        assert row.loc["farmed_listed_1season", "estimate"] == 0.0
+        assert row.loc["list_purity_2season", "denominator"] >= 0
+        assert row.loc["honest_flagged", "denominator"] > 0
+        est, lo, hi = row.loc["open_sea_years_listed", ["estimate", "ci_low", "ci_high"]]
+        assert lo <= est <= hi
+        assert "| 指标 |" in uncertainty.to_markdown(t)
+        pid = "R0002_S5000_B090"
+        case = case_study.annual_table(comp, pid)
+        assert len(case) == len(am["years"]) and "level" in case
+        sar, s2s = case_study.scene_series(act, s2, pid)
+        case_study.figure(case, m["thresholds"], tmp_path / "fig_case", sar, s2s,
+                          case_study.annual_table(comp, "R0002"), *case_study.scene_series(act, s2, "R0002"),
+                          pid=pid, cmp_pid="R0002")
+        assert (tmp_path / "fig_case.png").exists()
+    finally:
+        C.ACTIVITY_METRIC = old

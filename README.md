@@ -200,6 +200,20 @@ python -m rs_verify.paper_figs --tradeoff-table outputs/v3_tradeoff_per/tradeoff
 
 第二判读者盲判：`data/visual/blind2_key.csv` 是 50 张盲判图（B01–B50）与第二轮样本的对照（**不要给判读人看**）。
 
+### 9. 置信区间与典型案例
+
+```bash
+# 关键指标的 95% 置信区间（按参考地块整群自助抽样 2000 次；同一地块不同年份不当作独立样本）
+python -m rs_verify.uncertainty --composite outputs/v4_fusion/fusion_composite.csv \
+    --metrics outputs/v4_fusion/fusion_metrics.json --batches outputs/v4_fusion/batches.csv \
+    --visual-labels data/visual/ailun_visual_round1.csv data/visual/ailun_visual_round2.csv --outdir outputs/v4_uncertainty
+# 典型案例 R0035（登记在、海已不养 → 整改通知 → 吊销核查），对照地块一直在养；--thumbs 需要 GEE
+python -m rs_verify.case_study --composite outputs/v4_fusion/fusion_composite.csv \
+    --metrics outputs/v4_fusion/fusion_metrics.json --pid R0035 --compare R0014 \
+    --activity "data/activity/ailun_activity_*.csv" --s2 "data/activity_s2/ailun_s2_*.csv" --metric abs_excess \
+    --thumbs --claim-geoms data/claims/ailun_claim_geoms.geojson --project <PROJECT> --outdir outputs/case_study
+```
+
 ### 诊断图
 
 ```bash
