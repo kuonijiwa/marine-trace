@@ -5,15 +5,18 @@
 
 为什么不直接按表格列解析：PDF 版式提取出来的文字里，一宗地的项目名、面积、养殖方式等单元格
 会和坐标行交错（一个单元格被拆到好几行，夹在第 3、4 个界址点之间）。这里按"界址点"来切分：
-  1. 每一行找出所有界址点"序号, 纬度度分秒, 经度度分秒"（序号可带 A，如 A1）；
-  2. 序号回到 1（或变小）就是新的一宗地；
+  1. 每一行找出所有界址点"序号, 纬度度分秒, 经度度分秒"（序号可带字母，如 A1、B3）；
+  2. 序号回到 1（或变小）就是新的一宗地；字母变了（A4 后接 B1）是同一宗的下一块；
   3. 夹在这宗地第一个和最后一个界址点之间的其余文字归这宗地，两宗地之间的文字归下一宗；
   4. 从这些文字里取：申请面积（不带"公顷"后缀的小数，取最后一个）、海域管理号、养殖方式、
      用海方式（海面/海底）、申请类型（设立/续期/变更/转让）、所属街道。
 不提取申请人姓名（隐私；论文里也只用匿名编号）。
 
-自检：用坐标算出的面积和公示面积比，相对误差 ≤ 5% 记为 ok。一宗地的界址点编号若中途重新从 1 开始
-（多块组成一宗），后面那块没有自己的面积，就并进前一块，合并后面积对得上才算 ok。
+自检：用坐标算出的面积和公示面积比，相对误差 ≤ 5% 记为 ok。没有自己面积的一块，若并进前一宗或后一宗
+后面积对得上，就并进去（多块组成一宗）。
+
+已知解析不了、也不必解析的：界址点按多栏排版、或文字层字符错位的公示（如滩涂底播、围海池塘大宗），
+这些在水下或是池塘，卫星本来就不筛查；它们会表现为 no_area / area_mismatch，不会混进筛查地块。
 
 坐标按 CGCS2000 给出，与 WGS84 相差在厘米级，直接当 WGS84 用。
 
@@ -39,7 +42,7 @@ LON_RANGE = (115.0, 130.0)
 AREA_TOL = 0.05
 
 _DMS = r"(\d{2,3})\s*°\s*(\d{1,2})\s*′\s*(\d{1,2}(?:\.\d+)?)\s*″?"
-POINT_RE = re.compile(r"(?:(?<![\d.])A?(\d{1,3})\s*[,、]?\s*)?" + _DMS + r"\s*,?\s*" + _DMS)
+POINT_RE = re.compile(r"(?:(?<![\d.A-Za-z])([A-Z])?(\d{1,3})\s*[,、]?\s*)?" + _DMS + r"\s*,?\s*" + _DMS)
 AREA_RE = re.compile(r"(?<![\d.A-Za-z])(\d{1,4}\.\d{1,6})(?![\d.]|\s*公顷|\s*hm)")
 MGMT_RE = re.compile(r"\d{4}D\d{11}|国海证号?\s*\d{6,}|\b0\d{8}\b")
 STREET_TOKEN_RE = re.compile(r"(?:^|[\s,])([一-龥]{2,4})街道(?=$|[\s,])")
@@ -66,17 +69,17 @@ def dms(d, m, s) -> float:
 
 
 def scan_points(text: str):
-    """逐行找界址点；返回 points=[(line, idx, lon, lat)] 和 residual=[每行去掉坐标后的文字]。"""
+    """逐行找界址点；返回 points=[(line, idx, lon, lat, 字母前缀)] 和 residual=[每行去掉坐标后的文字]。"""
     points, residual = [], []
     for ln, line in enumerate(normalize(text).splitlines()):
         rest, last = [], 0
         for m in POINT_RE.finditer(line):
-            lat = dms(m.group(2), m.group(3), m.group(4))
-            lon = dms(m.group(5), m.group(6), m.group(7))
+            lat = dms(m.group(3), m.group(4), m.group(5))
+            lon = dms(m.group(6), m.group(7), m.group(8))
             if not (LAT_RANGE[0] <= lat <= LAT_RANGE[1] and LON_RANGE[0] <= lon <= LON_RANGE[1]):
                 continue
-            idx = int(m.group(1)) if m.group(1) else None
-            points.append((ln, idx, lon, lat))
+            idx = int(m.group(2)) if m.group(2) else None
+            points.append((ln, idx, lon, lat, m.group(1)))
             rest.append(line[last:m.start()])
             last = m.end()
         rest.append(line[last:])
@@ -85,18 +88,30 @@ def scan_points(text: str):
 
 
 def segment(points) -> list[list[tuple]]:
-    """序号回到 1 或变小 → 新的一宗。"""
-    polys, cur, prev = [], [], None
+    """序号回到 1 或变小 → 新的一宗。带字母的编号（A1…A4、B1…B9）是同一宗的几块：
+    字母变了（B1 接在 A4 后面）只开新的一块，不开新的一宗；每个点的第 6 个元素记块号。"""
+    polys, cur, prev, prev_letter, ring = [], [], None, None, 0
     for p in points:
-        idx = p[1]
+        idx, letter = p[1], p[4]
         if cur and idx is not None and (idx == 1 or (prev is not None and idx <= prev)):
-            polys.append(cur)
-            cur = []
-        cur.append(p)
+            if letter and prev_letter and letter != prev_letter and letter != "A":
+                ring += 1                      # 同一宗的下一块
+            else:
+                polys.append(cur)
+                cur, ring = [], 0
+        cur.append(p + (ring,))
         prev = idx if idx is not None else prev
+        prev_letter = letter
     if cur:
         polys.append(cur)
     return [c for c in polys if len(c) >= 3]
+
+
+def split_rings(pl) -> list[list[tuple]]:
+    rings = {}
+    for p in pl:
+        rings.setdefault(p[5], []).append(p)
+    return [r for r in rings.values() if len(r) >= 3]
 
 
 def assign_text(polys, residual) -> list[str]:
@@ -195,9 +210,10 @@ def parse_text(text: str, source: str = "") -> list[dict]:
     items = []
     for k, (pl, txt) in enumerate(zip(polys, texts)):
         meta = parse_meta(txt)
-        ring = ring_of(pl)
-        items.append({"source": source, "order": k + 1, "rings": [ring], "n_pts": len(pl), **meta,
-                      "area_calc_ha": geo.ring_area_m2(ring) / 1e4, "self_intersect": self_intersects(ring)})
+        rings = [ring_of(r) for r in split_rings(pl)]
+        items.append({"source": source, "order": k + 1, "rings": rings, "n_pts": len(pl), **meta,
+                      "area_calc_ha": sum(geo.ring_area_m2(r) for r in rings) / 1e4,
+                      "self_intersect": any(self_intersects(r) for r in rings)})
     return merge_multipart(items)
 
 
@@ -223,8 +239,36 @@ def try_split(it: dict) -> None:
             return
 
 
+def _absorb(dst: dict, src: dict, front: bool) -> None:
+    dst["rings"] = (src["rings"] + dst["rings"]) if front else (dst["rings"] + src["rings"])
+    dst["n_pts"] += src["n_pts"]
+    dst["area_calc_ha"] += src["area_calc_ha"]
+    dst["self_intersect"] = dst["self_intersect"] or src["self_intersect"]
+    for f in ("culture", "sea_mode", "app_type", "street"):
+        dst[f] = dst[f] or src[f]
+
+
+def merge_into_next(items: list[dict]) -> list[dict]:
+    """没有自己面积的一块排在一宗前面（单元格写在后一块旁边）：并进后一宗后面积对得上才并。"""
+    out, i = [], 0
+    while i < len(items):
+        it = items[i]
+        nxt = items[i + 1] if i + 1 < len(items) else None
+        if it["area_decl_ha"] is None and nxt is not None and nxt["area_decl_ha"]:
+            alone = rel_err(nxt["area_calc_ha"], nxt["area_decl_ha"])
+            merged = nxt["area_calc_ha"] + it["area_calc_ha"]
+            if alone is not None and alone > AREA_TOL and rel_err(merged, nxt["area_decl_ha"]) <= AREA_TOL:
+                _absorb(nxt, it, front=True)
+                i += 1
+                continue
+        out.append(it)
+        i += 1
+    return out
+
+
 def merge_multipart(items: list[dict]) -> list[dict]:
-    """没有自己面积的一块，若与前一宗合并后面积对得上，就并进去（多块组成一宗）。"""
+    """没有自己面积的一块，若与前一宗（或后一宗）合并后面积对得上，就并进去（多块组成一宗）。"""
+    items = merge_into_next(items)
     out = []
     for it in items:
         prev = out[-1] if out else None
@@ -232,12 +276,7 @@ def merge_multipart(items: list[dict]) -> list[dict]:
             e_alone = rel_err(prev["area_calc_ha"], prev["area_decl_ha"])
             merged = prev["area_calc_ha"] + it["area_calc_ha"]
             if e_alone is not None and e_alone > AREA_TOL and rel_err(merged, prev["area_decl_ha"]) <= AREA_TOL:
-                prev["rings"] += it["rings"]
-                prev["n_pts"] += it["n_pts"]
-                prev["area_calc_ha"] = merged
-                prev["self_intersect"] = prev["self_intersect"] or it["self_intersect"]
-                for f in ("culture", "sea_mode", "app_type", "street"):
-                    prev[f] = prev[f] or it[f]
+                _absorb(prev, it, front=False)
                 continue
         out.append(it)
     for it in out:
