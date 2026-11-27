@@ -45,13 +45,20 @@ def shrink(fc: ee.FeatureCollection, inner_m: float) -> ee.FeatureCollection:
     return fc.map(one).filter(ee.Filter.gt("area_m2", 0))
 
 
-def s2_collection(region: ee.Geometry, start: str, end: str) -> ee.ImageCollection:
-    return (ee.ImageCollection("COPERNICUS/S2_SR_HARMONIZED")
-            .filterBounds(region).filterDate(start, end)
-            .filter(ee.Filter.lt("CLOUDY_PIXEL_PERCENTAGE", MAX_SCENE_CLOUD)))
+def month_filter(months):
+    """只保留这些日历月的影像（如海带季 12,1,2,3,4,5），少算不用的月份、省 GEE 配额。"""
+    return ee.Filter.Or(*[ee.Filter.calendarRange(int(m), int(m), "month") for m in months])
 
 
-def per_scene_table(fc: ee.FeatureCollection, start: str, end: str, region: ee.Geometry) -> ee.FeatureCollection:
+def s2_collection(region: ee.Geometry, start: str, end: str, months=None) -> ee.ImageCollection:
+    col = (ee.ImageCollection("COPERNICUS/S2_SR_HARMONIZED")
+           .filterBounds(region).filterDate(start, end)
+           .filter(ee.Filter.lt("CLOUDY_PIXEL_PERCENTAGE", MAX_SCENE_CLOUD)))
+    return col.filter(month_filter(months)) if months else col
+
+
+def per_scene_table(fc: ee.FeatureCollection, start: str, end: str, region: ee.Geometry,
+                    months=None) -> ee.FeatureCollection:
     water = G.water_mask()
     k = ee.Kernel.square(1)
     reducer = ee.Reducer.mean().combine(ee.Reducer.count(), sharedInputs=True)
@@ -76,7 +83,7 @@ def per_scene_table(fc: ee.FeatureCollection, start: str, end: str, region: ee.G
             "n_pix": f.get("tex_count"), "tile": img.get("MGRS_TILE"),
         }))
 
-    return s2_collection(region, start, end).map(per_image).flatten()
+    return s2_collection(region, start, end, months).map(per_image).flatten()
 
 
 def main() -> None:
@@ -89,7 +96,9 @@ def main() -> None:
     ap.add_argument("--end", default=C.END_DATE)
     ap.add_argument("--by-year", action="store_true")
     ap.add_argument("--inner-buffer", type=float, default=0.0, help="地块向内收缩米数（建议 50）")
+    ap.add_argument("--months", default=None, help="只导这些月份，如 12,1,2,3,4,5（海带季）；默认全年")
     args = ap.parse_args()
+    months = [int(m) for m in args.months.split(",")] if args.months else None
 
     G.init(args.project)
     gj = geo.load_geojson(args.geojson)
@@ -103,9 +112,9 @@ def main() -> None:
     else:
         periods = [(args.start, args.end, "")]
     for start, end, suffix in periods:
-        n = s2_collection(region, start, end).size().getInfo()
+        n = s2_collection(region, start, end, months).size().getInfo()
         task = ee.batch.Export.table.toDrive(
-            collection=per_scene_table(fc, start, end, region),
+            collection=per_scene_table(fc, start, end, region, months),
             description=f"{args.area}{tag}{suffix}", folder=args.drive_folder, fileFormat="CSV", selectors=SELECTORS)
         task.start()
         print(f"已提交 {args.area}{tag}{suffix}（{start} ~ {end}，{n} 景）：", task.id)
