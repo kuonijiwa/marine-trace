@@ -19,6 +19,12 @@ STUDY_AREAS = {
         "zone_bbox": [122.42, 37.12, 122.72, 37.34],
         "verified": False,
     },
+    "jinpu": {
+        "name": "大连金普新区（金石滩、大李家、登沙河、杏树等）",
+        "farm_type": "raft",          # 筏吊式为主（海带、牡蛎、扇贝等），地块来自政府公示的真实养殖证
+        "bbox": [121.45, 38.85, 122.40, 39.45],
+        "verified": False,
+    },
     "nanhuangcheng": {
         "name": "长岛南隍城",
         "farm_type": "cage_platform",  # 大型网箱平台（经海系列）
