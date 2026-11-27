@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 from pathlib import Path
 
 import numpy as np
@@ -62,6 +63,40 @@ def cluster_bootstrap(df: pd.DataFrame, stat, cluster: str = "cluster", n: int =
         return est, float("nan"), float("nan")
     lo, hi = np.percentile(vals, [2.5, 97.5])
     return est, float(lo), float(hi)
+
+
+def _binom_cdf(k: int, n: int, p: float) -> float:
+    """P(X <= k)，X ~ Binomial(n, p)；对数空间求和，n 上千也不溢出。"""
+    if p <= 0:
+        return 1.0
+    if p >= 1:
+        return 1.0 if k >= n else 0.0
+    lp, lq = math.log(p), math.log1p(-p)
+    logs = [math.lgamma(n + 1) - math.lgamma(i + 1) - math.lgamma(n - i + 1) + i * lp + (n - i) * lq
+            for i in range(k + 1)]
+    m = max(logs)
+    return min(1.0, math.exp(m) * sum(math.exp(v - m) for v in logs))
+
+
+def clopper_pearson(k: int, n: int, alpha: float = 0.05) -> tuple[float, float]:
+    """精确二项区间（Clopper-Pearson）。估计为 0% 或 100% 时自助法区间会退化成一个点（0.0–0.0%），
+    这时报告这个区间：例如 0/114 → 0–3.2%，16/16 → 79.4–100%。"""
+    if n <= 0:
+        return float("nan"), float("nan")
+
+    def upper(kk: int) -> float:   # 使 P(X <= kk) = alpha/2 的 p；P 随 p 单调递减，二分
+        if kk >= n:
+            return 1.0
+        lo, hi = 0.0, 1.0
+        for _ in range(60):
+            mid = (lo + hi) / 2
+            if _binom_cdf(kk, n, mid) > alpha / 2:
+                lo = mid
+            else:
+                hi = mid
+        return (lo + hi) / 2
+
+    return (0.0 if k == 0 else 1.0 - upper(n - k)), upper(k)
 
 
 def ratio(mask_num, mask_den):
@@ -105,7 +140,9 @@ def run(comp: pd.DataFrame, visual: pd.DataFrame | None = None, th: dict | None 
     def add(key, cn, basis, df, stat):
         est, lo, hi = cluster_bootstrap(df, stat, n=n)
         num, den = stat(df)
+        ex_lo, ex_hi = clopper_pearson(num, den)
         rows.append({"metric": key, "指标": cn, "basis": basis, "estimate": est, "ci_low": lo, "ci_high": hi,
+                     "exact_low": ex_lo, "exact_high": ex_hi,
                      "numerator": num, "denominator": den, "n_clusters": int(df["cluster"].nunique())})
 
     yes = lambda d: d["visual"] == "yes"  # noqa: E731
@@ -154,12 +191,22 @@ def run(comp: pd.DataFrame, visual: pd.DataFrame | None = None, th: dict | None 
     return pd.DataFrame(rows)
 
 
+def degenerate(r) -> bool:
+    """自助法区间退化（估计 0% / 100%，或上下限相同）→ 改报精确二项区间。"""
+    return bool(np.isnan(r.ci_low) or r.ci_high - r.ci_low < 1e-9)
+
+
 def to_markdown(t: pd.DataFrame) -> str:
     lines = ["| 指标 | 口径 | 估计 | 95% 区间 | 分子/分母 | 地块数 |", "|---|---|---|---|---|---|"]
     for r in t.itertuples():
-        ci = "—" if np.isnan(r.ci_low) else f"{r.ci_low * 100:.1f}–{r.ci_high * 100:.1f}%"
+        if degenerate(r):
+            ci = "—" if np.isnan(r.exact_low) else f"{r.exact_low * 100:.1f}–{r.exact_high * 100:.1f}%†"
+        else:
+            ci = f"{r.ci_low * 100:.1f}–{r.ci_high * 100:.1f}%"
         lines.append(f"| {r.指标} | {r.basis} | {r.estimate * 100:.1f}% | {ci} | {r.numerator}/{r.denominator} | "
                      f"{r.n_clusters} |")
+    lines += ["", "区间：按参考地块整群自助抽样（同一地块不同年份不当作独立样本）。",
+              "† 估计为 0% 或 100% 时自助法区间退化成一个点，改报精确二项区间（Clopper-Pearson）。"]
     return "\n".join(lines)
 
 

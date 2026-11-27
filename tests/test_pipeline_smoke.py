@@ -111,6 +111,10 @@ def test_uncertainty_and_case_study(tmp_path):
         est, lo, hi = row.loc["open_sea_years_listed", ["estimate", "ci_low", "ci_high"]]
         assert lo <= est <= hi
         assert "| 指标 |" in uncertainty.to_markdown(t)
+        # 0% / 100% 时自助法区间退化，改报精确二项区间（与 scipy beta 分位一致）
+        assert abs(uncertainty.clopper_pearson(0, 114)[1] - 0.0318) < 5e-4
+        assert abs(uncertainty.clopper_pearson(16, 16)[0] - 0.7941) < 5e-4
+        assert abs(uncertainty.clopper_pearson(44, 112)[0] - 0.3019) < 5e-4
         pid = "R0002_S5000_B090"
         case = case_study.annual_table(comp, pid)
         assert len(case) == len(am["years"]) and "level" in case
